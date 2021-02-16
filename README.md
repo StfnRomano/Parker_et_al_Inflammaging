@@ -14,18 +14,18 @@ Parker et al, 2021, *Heterochronic fecal microbiota transfer reverses hallmarks 
 
 ## Work-flow
 ### Taxonomy
-01 – Load data, format the metadata and perform alpha and beta diversity analyses
-02 – Filter the data to perform differential abundance analysis at the species level
-03 – Differential abundance analysis based on linear mixed models performed at the species level
-04 - Differential abundance analysis based on linear mixed models performed at the species level to compare mice groups at the beginning of the experiment
-05 – Filter the data to perform differential abundance analysis at the family level
-06 – Differential abundance analysis based on linear mixed models performed at the family level
-07- Differential abundance analysis based on linear mixed models performed at the family level to compare mice groups at the beginning of the experiment
+*01 – Load data, format the metadata and perform alpha and beta diversity analyses
+*02 – Filter the data to perform differential abundance analysis at the species level
+*03 – Differential abundance analysis based on linear mixed models performed at the species level
+*04 - Differential abundance analysis based on linear mixed models performed at the species level to compare mice groups at the beginning of the experiment
+*05 – Filter the data to perform differential abundance analysis at the family level
+*06 – Differential abundance analysis based on linear mixed models performed at the family level
+*07- Differential abundance analysis based on linear mixed models performed at the family level to compare mice groups at the beginning of the experiment
 ### Functions
-01 – Load the data and format them
-02 – Differential abundance analysis based on linear mixed models
-03 – Differential abundance analysis based on linear mixed models performed to compare mice groups at the beginning of the experiment
+*01 – Load the data and format them
+*02 – Differential abundance analysis based on linear mixed models
+*03 – Differential abundance analysis based on linear mixed models performed to compare mice groups at the beginning of the experiment
 
 ### Metabolomics
-01 – Load data, format and transform them
-02 – Perform ordinations and PLS-DA
+*01 – Load data, format and transform them
+*02 – Perform ordinations and PLS-DA
