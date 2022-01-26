@@ -34,8 +34,6 @@ Parker et al, 2022, *Heterochronic fecal microbiota transfer reverses hallmarks 
 
 02 – Differential abundance analysis based on linear mixed models
 
-03 – Differential abundance analysis based on linear mixed models performed to compare mice groups at the beginning of the experiment
-
 ### Metabolomics
 
 01 – Load data, format and transform them
