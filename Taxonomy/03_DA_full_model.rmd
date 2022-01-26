@@ -1,0 +1,529 @@
+---
+title: "DA lmm"
+author: "Stefano Romano"
+date: "October 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages and the previous filter dataset.
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2",
+                      "propr", "devtools", "ggpubr", "vegan", "RColorBrewer", "car", 
+                      "DHARMa", "glmmTMB", "lme4", "papeR")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(car)
+library(lme4)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(CoDaSeq)
+library(ggrepel)
+library(pairwiseAdonis)
+library(ggnewscale)
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+phyl_yy<-readRDS("Taxonomy/RDS/Phyloseq_filtered_species.rds")
+ntaxa(phyl_yy)
+```
+
+Data will be transformed using different approaches and linear mixed model will be built.
+We will manually assess the quality of the models.
+
+Remove Post_Abx and keep only taxa with rel. ab. > 0 in at least 5% of samples
+
+```{R echo=TRUE, message=FALSE, warning=FALSE}
+phyl_yy<-subset_samples(phyl_yy, Timepoint!="POST_ABX")
+wh0 <- genefilter_sample(phyl_yy, filterfun_sample(function(x) x > 0), A=0.05*nsamples(phyl_yy))
+wh0[wh0 == FALSE]
+phyl_yy <- prune_taxa(wh0, phyl_yy)
+ntaxa(phyl_yy)
+
+# Select all taxa names
+tax_name<-taxa_names(phyl_yy)
+
+# Create a df containing taxa abundances and metadata
+all(rownames(as.data.frame(t(otu_table(phyl_yy)))) == rownames(meta(phyl_yy)))
+df_m<-cbind.data.frame(as.data.frame(t(otu_table(phyl_yy))), meta(phyl_yy))
+```
+
+Look at the minimum values to correct data before transformation.
+```{R}
+otu_table(phyl_yy) %>% as.vector() %>% sort(decreasing = F) %>% unique() %>% head
+```
+
+Total number of transformation tested
+
+- LOG 
+- LOG add 0 after (LOG zero)
+- CLR
+- ArcSin 
+- LOGIT 
+- No transform
+
+
+```{R message=FALSE, warning=FALSE}
+
+# Create lists of lmm for each taxa
+l_glm_logbefore<-vector(mode = "list", length = length(tax_name))
+names(l_glm_logbefore)<-tax_name
+l_glm_logZero<-l_glm_logbefore
+l_glm_clr<-l_glm_logbefore
+l_glm_arcsinbefore<-l_glm_logbefore
+l_glm_logitbefore<-l_glm_logbefore
+l_glm_notransf<-l_glm_logbefore
+
+# make clr
+df_clr<-df_m[,tax_name]
+df_clr[df_clr == 0]<-1e-06
+df_clr<-as.data.frame(codaSeq.clr(df_clr))
+print(all(rownames(df_m) == rownames(df_clr)))
+df_clr<-cbind.data.frame(df_clr, df_m)
+
+
+# Control that tax name is the same as names in df
+all(tax_name == names(df_m)[1:45])
+all(tax_name == names(df_clr)[1:45])
+
+for(i in 1:length(tax_name)){
+  # LOG
+  l_before<-log2(df_m[,tax_name[i]]+1e-06) 
+  # LOG ZERO
+  l_zero<-log2(df_m[,tax_name[i]])
+  l_zero[is.na(l_zero) | is.infinite(l_zero)]<-0
+  # ArcSin
+  arcs_before<-asin(sqrt(df_m[,tax_name[i]]+1e-06))
+  # LOGIT
+  logit_before<-logit(df_m[,tax_name[i]]+1e-06) 
+  # Create the models
+  print(tax_name[i])
+  print("Log")
+  l_glm_logbefore[[i]]<-lmer(l_before ~ receiver * treat * Timepoint + (1|cage_mice/mice), data = df_m)
+  print("Log zero")
+  l_glm_logZero[[i]]<-lmer(l_zero ~ receiver * treat * Timepoint +  (1|cage_mice/ mice), data = df_m)
+  print("CLR")
+  l_glm_clr[[i]]<-lmer(df_clr[,i] ~ receiver * treat * Timepoint +  (1|cage_mice/mice), data = df_clr)
+  print("ArcSin")
+  l_glm_arcsinbefore[[i]]<-lmer(arcs_before ~ receiver * treat * Timepoint +  (1|cage_mice/mice), data = df_m)
+  print("LOGIT")
+  l_glm_logitbefore[[i]]<-lmer(logit_before ~ receiver * treat * Timepoint +  (1|cage_mice/mice), data = df_m)
+
+}
+```
+
+Save residuals.
+```{R message=FALSE, warning=FALSE}
+
+for(i in 1:length(tax_name)){
+  #log
+  path<-"/Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOG/"
+  dir.create("Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOG", recursive = T)
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logbefore[[i]]))
+  qqline(residuals(l_glm_logbefore[[i]]))
+  dev.off()
+  # LOG ZERO
+  path<-"Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOGZERO/"
+  dir.create("Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOGZERO", recursive = T)
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logZero[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logZero[[i]]))
+  qqline(residuals(l_glm_logZero[[i]]))
+  dev.off()  
+  # CLR
+  dir.create("Taxonomy/Figures/Residuals_species_full_model_noPostAbx/CLR/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_full_model_noPostAbx/CLR/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_clr[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_clr[[i]]))
+  qqline(residuals(l_glm_clr[[i]]))
+  dev.off()  
+  # ArcSin
+  dir.create("Taxonomy/Figures/Residuals_species_full_model_noPostAbx/ArcSin/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_full_model_noPostAbx/ArcSin/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_arcsinbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_arcsinbefore[[i]]))
+  qqline(residuals(l_glm_arcsinbefore[[i]]))
+  dev.off()  
+  # LOGIT
+  dir.create("Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOGIT/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_full_model_noPostAbx/LOGIT/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logitbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logitbefore[[i]]))
+  qqline(residuals(l_glm_logitbefore[[i]]))
+  dev.off() 
+}
+```
+
+Residuals are checked manually.
+The transformations that result in the best residuals are selected and saved in a table.
+This table is then imported and formatted as below.
+
+```{R message=FALSE, warning=FALSE}
+res<-read.delim("Taxonomy/Tables/Residuals_species.txt", header = T, stringsAsFactors = F)
+# Check how many model types are good
+unique(res$Better.w.o.PostAbx)
+res$genus<-gsub(" ","", res$genus)
+
+# Now select only the one for the diff transformations
+res_clr<-res[res$Better.w.o.PostAbx=="CLR",]$genus
+res_log_zero<-res[res$Better.w.o.PostAbx=="LogZero",]$genus
+res_arcsin<-res[res$Better.w.o.PostAbx=="ArcSin",]$genus
+res_logbefore<-res[res$Better.w.o.PostAbx=="Log",]$genus
+
+sum(length(res_clr), length(res_arcsin), length(res_log_zero), length(res_logbefore))
+na<-as.character(c(res_clr, res_log_zero, res_arcsin, res_logbefore))
+# 45 species, this is correct
+all(sort(tax_name) == sort(na))
+```
+
+## Extract only the contrast of interest
+We will verify whether the specific contrasts are significant.
+We will use the lmm with the best residuals for this.
+For all significant paths, we will then collect the CLR values and report them in a graph.
+
+```{R message=FALSE, warning=FALSE}
+library(emmeans)
+emm_options(contrast = list(infer = c(TRUE, T)))
+
+# create custom contrasts
+s_yy<-c(1,rep(0,35))
+pfmt_yy<-c(rep(0,12),1,rep(0,23))
+s_ym<-c(rep(0,6),1,rep(0,29))
+pfmt_ym<-c(rep(0,18),1,rep(0,17))
+s_oy<-c(0,1,rep(0,34))
+pfmt_oy<-c(rep(0,13),1,rep(0,22))
+s_yo<-c(rep(0,3),1,rep(0,32))
+pfmt_yo<-c(rep(0,15),1,rep(0,20))
+
+
+# CLR
+l_contr<-l_glm_clr
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_clr[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr[[i]]<-contrast(emm1, method = list("S_YY-PFMT_YY" = s_yy - pfmt_yy, 
+                             "S_YM-PFMT_YM" = s_ym - pfmt_ym,
+                             "S_OY-PFMT_OY" = s_oy - pfmt_oy,
+                             "S_YO-PFMT_YO" = s_yo - pfmt_yo), adjust = "none") %>% as.data.frame()
+}
+df_contr <- do.call(rbind.data.frame, l_contr)
+df_contr$padjust<-p.adjust(df_contr$p.value, method = "fdr")
+df_contr$spec<-gsub("[.][0-9]","",rownames(df_contr))
+all(res_clr %in% df_contr$spec)
+df_contr_clr<-df_contr[which(df_contr$spec %in% res_clr),]
+df_contr_sign<-subset(df_contr_clr, padjust <= 0.05)
+
+# LOG
+l_contr_log<-l_glm_logbefore
+for(i in 1:length(l_contr_log)){
+  print(i)
+  emm1<-emmeans(l_glm_logbefore[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_log[[i]]<-contrast(emm1, method = list("S_YY-PFMT_YY" = s_yy - pfmt_yy, 
+                             "S_YM-PFMT_YM" = s_ym - pfmt_ym,
+                             "S_OY-PFMT_OY" = s_oy - pfmt_oy,
+                             "S_YO-PFMT_YO" = s_yo - pfmt_yo), adjust = "none") %>% as.data.frame()
+}
+df_contr_log <- do.call(rbind.data.frame, l_contr_log)
+df_contr_log$padjust<-p.adjust(df_contr_log$p.value, method = "fdr")
+df_contr_log$spec<-gsub("[.][0-9]","",rownames(df_contr_log))
+all(res_logbefore %in% df_contr_log$spec)
+
+df_contr_log<-df_contr_log[which(df_contr_log$spec %in% res_logbefore),]
+df_contr_log_sgn<-subset(df_contr_log, padjust <= 0.05)
+
+# LOG_ZERO
+l_contr_logzero<-l_glm_logZero
+for(i in 1:length(l_contr_logzero)){
+  print(i)
+  emm1<-emmeans(l_glm_logZero[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_logzero[[i]]<-contrast(emm1, method = list("S_YY-PFMT_YY" = s_yy - pfmt_yy, 
+                             "S_YM-PFMT_YM" = s_ym - pfmt_ym,
+                             "S_OY-PFMT_OY" = s_oy - pfmt_oy,
+                             "S_YO-PFMT_YO" = s_yo - pfmt_yo), adjust = "none") %>% as.data.frame()
+}
+df_contr_logzero <- do.call(rbind.data.frame, l_contr_logzero)
+df_contr_logzero$padjust<-p.adjust(df_contr_logzero$p.value, method = "fdr")
+df_contr_logzero$spec<-gsub("[.][0-9]","",rownames(df_contr_logzero))
+all(res_log_zero %in% df_contr_logzero$spec)
+
+df_contr_logzero<-df_contr_logzero[which(df_contr_logzero$spec %in% res_log_zero),]
+df_contr_logzero_sign<-subset(df_contr_logzero, padjust <= 0.05)
+
+# ArcSin
+l_contr_arcsin<-l_glm_arcsinbefore
+for(i in 1:length(l_contr_arcsin)){
+  print(i)
+  emm1<-emmeans(l_glm_arcsinbefore[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_arcsin[[i]]<-contrast(emm1, method = list("S_YY-PFMT_YY" = s_yy - pfmt_yy, 
+                             "S_YM-PFMT_YM" = s_ym - pfmt_ym,
+                             "S_OY-PFMT_OY" = s_oy - pfmt_oy,
+                             "S_YO-PFMT_YO" = s_yo - pfmt_yo), adjust = "none") %>% as.data.frame()
+}
+df_contr_arcsin <- do.call(rbind.data.frame, l_contr_arcsin)
+df_contr_arcsin$padjust<-p.adjust(df_contr_arcsin$p.value, method = "fdr")
+df_contr_arcsin$spec<-gsub("[.][0-9]","",rownames(df_contr_arcsin))
+all(res_arcsin %in% df_contr_arcsin$spec)
+
+df_contr_arcsin<-df_contr_arcsin[which(df_contr_arcsin$spec %in% res_arcsin),]
+df_contr_arcsin_sign<-subset(df_contr_arcsin, padjust <= 0.05)
+
+```
+
+Select only sign taxa.
+
+```{R message=FALSE, warning=FALSE}
+sign<-c(rownames(df_contr_arcsin_sign), rownames(df_contr_log_sgn), rownames(df_contr_sign), rownames(df_contr_logzero_sign))
+length(sign)
+length(rownames(df_contr))
+
+all(sign %in% rownames(df_contr))  
+
+df_contr_sign<-df_contr[which(rownames(df_contr) %in% sign),]
+taxa_sign<-rownames(df_contr_sign)
+shortaxa<-taxa_sign
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][7]
+  x<-gsub("s__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+}
+shortaxa<-gsub("[.][0-9]*", "", shortaxa)
+df_contr_sign$short<-shortaxa
+
+
+df_contr_sign$short<-as.factor(df_contr_sign$short)
+for(i in 1:nrow(df_contr_sign)){
+  if(df_contr_sign[i,]$estimate < 0){
+    df_contr_sign$enrich[i]<-"Enriched in POST_FMT"
+  } else {df_contr_sign$enrich[i]<-"Enriched in PRE_FMT"}
+}
+df_contr_sign$enrich <- factor(df_contr_sign$enrich, levels = c("Enriched in PRE_FMT", "Enriched in POST_FMT"))
+
+
+gg_clr<-ggplot(df_contr_sign, aes(reorder(short, -estimate), estimate*-1, fill = enrich)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~contrast) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_fill_brewer(type = "div", palette = "Set2") +
+  geom_errorbar(aes(ymin = -1*(estimate-SE), ymax =   -1*(estimate+SE), width = 0.2)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ylab("Mean difference in CLR and SE") +
+  xlab("Species")
+
+
+ggsave("Taxonomy/Figures/CLR_onlyfdr_DA_fullmodel_noPostAbx.svg", device = "svg", height = 25, width = 20, units = "cm")
+
+df_contr_sign_yo<-subset(df_contr_sign, contrast == "S_OY-PFMT_OY"  | contrast == "S_YO-PFMT_YO")
+
+gg_clr<-ggplot(df_contr_sign_yo, aes(reorder(short, -estimate), estimate*-1, fill = enrich)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~contrast) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_fill_brewer(type = "div", palette = "Set2") +
+  geom_errorbar(aes(ymin = -1*(estimate-SE), ymax =   -1*(estimate+SE), width = 0.2)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ylab("Mean difference in CLR and SE") +
+  xlab("Species")
+gg_clr
+
+ggsave("Taxonomy/Figures/CLR_Sign_spec_yo.svg", device = "svg", height = 20, width = 20, units = "cm")
+```
+
+Save a table with the info about the different transf.
+
+```{R message=FALSE, warning=FALSE}
+
+df_contr_arcsin_sign$Transformation<-rep("ArcSin", length = nrow(df_contr_arcsin_sign))
+df_contr_log_sgn$Transformation<-rep("Log", length = nrow(df_contr_log_sgn))
+
+df_contr_sign<-subset(df_contr_clr, padjust <= 0.05) # rerun becuase was overwritten above
+df_contr_sign$Transformation<-rep("CLR", length = nrow(df_contr_sign))
+df_contr_logzero_sign$Transformation<-rep("Log_zero", length = nrow(df_contr_logzero_sign))
+
+df_sign_methods<-rbind.data.frame(df_contr_arcsin_sign, df_contr_log_sgn, df_contr_sign, df_contr_logzero_sign)
+
+dir.create("/Taxonomy/Tables/", recursive = T)
+write.table(df_sign_methods, "Taxonomy/Tables/DA_species_fullmodel.txt")
+write.table(df_contr, "Taxonomy/Tables/DA_allSpecies_fullmodel.txt")
+```
+
+### Compare YAbx pre and post
+
+```{R message=FALSE, warning=FALSE}
+# create custom contrasts
+s_yabx<-c(rep(0,9),1,rep(0,26))
+pfmt_yabx<-c(rep(0,21),1,rep(0,14))
+
+l_contr<-l_glm_clr
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_clr[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr[[i]]<-contrast(emm1, method = list("S_YAbx-PFMT_YAbx" = s_yabx - pfmt_yabx), adjust = "none") %>% as.data.frame()
+}
+df_contr <- do.call(rbind.data.frame, l_contr)
+df_contr$padjust<-p.adjust(df_contr$p.value, method = "fdr")
+df_contr$spec<-gsub("[.][0-9]","",rownames(df_contr))
+all(res_clr %in% df_contr$spec)
+
+df_contr_clr<-df_contr[which(df_contr$spec %in% res_clr),]
+df_contr_sign<-subset(df_contr_clr, padjust <= 0.05)
+
+# LOG
+l_contr_log<-l_glm_logbefore
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_logbefore[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_log[[i]]<-contrast(emm1, method = list("S_YAbx-PFMT_YAbx" = s_yabx - pfmt_yabx), adjust = "none") %>% as.data.frame()
+}
+
+df_contr_log <- do.call(rbind.data.frame, l_contr_log)
+df_contr_log$padjust<-p.adjust(df_contr_log$p.value, method = "fdr")
+df_contr_log$spec<-gsub("[.][0-9]","",rownames(df_contr_log))
+all(res_logbefore %in% df_contr_log$spec)
+
+df_contr_log<-df_contr_log[which(df_contr_log$spec %in% res_logbefore),]
+df_contr_log_sgn<-subset(df_contr_log, padjust <= 0.05)
+
+# LOG ZERO
+l_contr_logzero<-l_glm_logZero
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_logZero[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_logzero[[i]]<-contrast(emm1, method = list("S_YAbx-PFMT_YAbx" = s_yabx - pfmt_yabx), adjust = "none") %>% as.data.frame()
+}
+df_contr_logzero <- do.call(rbind.data.frame, l_contr_logzero)
+df_contr_logzero$padjust<-p.adjust(df_contr_logzero$p.value, method = "fdr")
+df_contr_logzero$spec<-gsub("[.][0-9]","",rownames(df_contr_logzero))
+all(res_log_zero %in% df_contr_logzero$spec)
+
+df_contr_logzero<-df_contr_logzero[which(df_contr_logzero$spec %in% res_log_zero),]
+df_contr_logzero_sign<-subset(df_contr_logzero, padjust <= 0.05)
+
+# ArcSin
+l_contr_arcsin<-l_glm_arcsinbefore
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_arcsinbefore[[i]], specs = ~ receiver:treat:Timepoint)
+  l_contr_arcsin[[i]]<-contrast(emm1, method = list("S_YAbx-PFMT_YAbx" = s_yabx - pfmt_yabx), adjust = "none") %>% as.data.frame()
+}
+df_contr_arcsin <- do.call(plyr::rbind.fill, l_contr_arcsin)
+df_contr_arcsin$padjust<-p.adjust(df_contr_arcsin$p.value, method = "fdr")
+df_contr_arcsin$spec<-gsub("[.][0-9]","",names(l_contr_arcsin))
+all(res_arcsin %in% df_contr_arcsin$spec)
+
+df_contr_arcsin<-df_contr_arcsin[which(df_contr_arcsin$spec %in% res_arcsin),]
+df_contr_arcsin_sign<-subset(df_contr_arcsin, padjust <= 0.05)
+
+
+
+```
+
+Select only sign taxa.
+
+```{R message=FALSE, warning=FALSE}
+sign<-c(df_contr_arcsin_sign$spec, rownames(df_contr_log_sgn), rownames(df_contr_sign), rownames(df_contr_logzero_sign))
+all(sign %in% rownames(df_contr))  
+df_contr_sign<-df_contr[which(rownames(df_contr) %in% sign),]
+
+taxa_sign<-rownames(df_contr_sign)
+shortaxa<-taxa_sign
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][7]
+  x<-gsub("s__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+}
+shortaxa<-gsub("[.][0-9]*", "", shortaxa)
+df_contr_sign$short<-shortaxa
+
+df_contr_sign$short<-as.factor(df_contr_sign$short)
+for(i in 1:nrow(df_contr_sign)){
+  if(df_contr_sign[i,]$estimate < 0){
+    df_contr_sign$enrich[i]<-"Enriched in POST_FMT"
+  } else {df_contr_sign$enrich[i]<-"Enriched in PRE_FMT"}
+}
+df_contr_sign$enrich <- factor(df_contr_sign$enrich, levels = c("Enriched in PRE_FMT", "Enriched in POST_FMT"))
+
+
+gg_clr<-ggplot(df_contr_sign, aes(reorder(short, -estimate), estimate*-1, fill = enrich)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~contrast) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_fill_grey() +
+  geom_errorbar(aes(ymin = -1*(estimate-SE), ymax =   -1*(estimate+SE), width = 0.2)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ylab("Mean difference in CLR and SE") +
+  xlab("Species")
+
+ggsave("Taxonomy/Figures/CLR_onlyfdr_DA_fullmodel_YAbx_noPostAbx.svg", device = "svg", height = 20, width = 20, units = "cm")
+```
+
+Save a table with the info about the different transf.
+```{R message=FALSE, warning=FALSE}
+
+df_contr_arcsin_sign$Transformation<-rep("ArcSin", length = nrow(df_contr_arcsin_sign))
+df_contr_log_sgn$Transformation<-rep("Log", length = nrow(df_contr_log_sgn))
+
+df_contr_sign<-subset(df_contr_clr, padjust <= 0.05) # rerun becuase was overwritten above
+df_contr_sign$Transformation<-rep("CLR", length = nrow(df_contr_sign))
+df_contr_logzero_sign$Transformation<-rep("Log_zero", length = nrow(df_contr_logzero_sign))
+
+df_sign_methods<-rbind.data.frame(df_contr_arcsin_sign, df_contr_log_sgn, df_contr_sign, df_contr_logzero_sign)
+
+write.table(df_sign_methods, "Taxonomy/Tables/DA_species_YAbx.txt")
+write.table(df_contr, "Taxonomy/Tables/DA_allSpecies_YAbx.txt")
+
+```
+
+### Save image
+
+```{R message=FALSE, warning=FALSE}
+save.image("/Taxonomy/RData/03_DA_lm_full_model_.RData")
+```

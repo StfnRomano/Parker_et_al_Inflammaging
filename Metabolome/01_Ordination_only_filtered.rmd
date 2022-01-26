@@ -1,0 +1,238 @@
+---
+title: "Metabolome ordination and PLS-DA"
+author: "Stefano Romano"
+date: "January 2021"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages and the previous workspace.
+
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2",
+                      "ggpubr", "vegan", "RColorBrewer", "car")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome", "mixOmics")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(mixOmics)
+library(car)
+library(ggConvexHull)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(ggrepel)
+# If pairwiseAdonis is not installed, please install the package before loading the library.
+library(pairwiseAdonis)
+library(dplyr)
+```
+
+# Clean and reformat the dataset
+
+Load the metabolome. 
+
+```{R}
+
+met<-read.delim("metabolome.txt", 
+                header = F, fill = T)
+```
+Transform the data.
+```{r}
+as.matrix(met) %>% as.vector() %>% sort() %>% unique() %>% head()
+# Change factors to numbers
+str(met)
+met[]<-lapply(met, function(x) as.numeric(as.character(x)))
+str(met)
+
+met[met == 0] <- 0.001
+met_log<-log2(met)
+head(met_log)
+```
+
+Center and divide by standard deviation.
+
+```{r}
+met_log<-as.data.frame(t(met_log))
+met_log_scaled<-scale(as.matrix(met_log), center = T, scale = T)
+met_log_scaled_df<-as.data.frame(met_log_scaled)
+
+# Visually verify distributions
+df_m_met<-melt(met_log_scaled_df)
+ggplot(df_m_met, aes(variable, value)) +
+  geom_boxplot() +
+  coord_flip()
+```
+
+
+Format df.
+```{r}
+met_log_scaled_df$samples<-gsub("\ [1-9]*", "", rownames(met_log_scaled_df))
+# add cage info
+all(rownames(met_log_scaled_df) == cage$codes)
+met_log_scaled_df$cage<-cage$cage
+
+# Make values as factors
+met_log_scaled_df$samples<-as.factor(met_log_scaled_df$samples)
+met_log_scaled_df$cage<-as.factor(met_log_scaled_df$cage)
+```
+
+Make explorative plot.
+```{r}
+vegdist(met_log_scaled_df[, -1*(c(which(names(met_log_scaled_df) == "samples"), which(names(met_log_scaled_df) == "cage")))], method = "euclidean") -> euc_met
+bd<-betadisper(euc_met, group = met_log_scaled_df$samples, add = T, type = "centroid")
+plot(bd)
+```
+
+There is one sample ("Pre Abx_OY 611") that does not cluster together with any other sample.
+This is most likely an outlier and we will remove it from the dataset.
+
+```{r}
+df<-met_log_scaled_df[rownames(met_log_scaled_df) != "Pre Abx_OY 611",]
+df$samples<-factor(df$samples, levels = c("PreAbx_YO", "PreAbx_OY", "PostFMT_OY", "PostFMT_YO"))
+```
+
+## PCoA
+
+```{r}
+vegdist(df[, -1*(c(which(names(df) == "samples"), which(names(df) == "cage")))], method = "euclidean") -> euc_met
+bd<-betadisper(euc_met, group = df$samples, add = T, type = "centroid")
+plot(bd)
+```
+
+We will not consider the outlier further in the analyses.
+
+# Verify whether differences between samples are significant
+
+```{r}
+set.seed(987)
+cc<-capscale(euc_met ~ samples + Condition(cage), data = df)
+
+h <- how(blocks = df$cage, nperm = 10000)
+anova.cca(cc, data = df, permutations = h, parallel = 2)
+
+# Pairwise adonis
+l_p<-pairwise.adonis2(euc_met ~ samples, data = df, strata = 'cage')
+p_values<-lapply(l_p[-1], function(x) x$`Pr(>F)`[1])
+p.adjust(p_values, method = "BH")
+```
+
+There is a statistically significant difference between groups.
+This difference is just partially mantained (adjusted p-values < 0.1) when we perform a pairwise analysis. 
+
+```{r}
+summary(cc)
+```
+
+
+# PLS-DA
+
+PLS-DA will be performed using the mixOmics package.
+
+## Run model including tuning
+
+Run a model with 10 components.
+
+```{r}
+set.seed(2543)
+Y<-as.factor(df$samples)
+X<-as.matrix(df[,1:67])
+
+MyResult.splsda <-splsda(X, Y, ncomp = 10, near.zero.var=TRUE) 
+perf.plsda <- perf(MyResult.splsda, validation = "Mfold", folds = 5, 
+                  progressBar = F, auc = TRUE, nrepeat = 75, cpus = 2) 
+
+plot(perf.plsda, col = color.mixo(1:3), sd = TRUE, legend.position = "horizontal")
+
+```
+
+The classification error rate is not particularly low.
+With 3 components the error rate goes down to 30%.
+
+Use this 3 components and perfom a variable selection.
+
+```{r}
+# grid of possible keepX values that will be tested for each comp 
+list.keepX <- c(1:5, seq(10, 67, 5))
+set.seed(2543)
+tune.splsda <- tune.splsda(X, Y, ncomp = 3, 
+                           validation = 'Mfold', 
+                           folds = 5, 
+                           progressBar = F, 
+                           dist = 'max.dist',
+                           test.keepX = list.keepX, 
+                           nrepeat = 75, 
+                           measure = "BER",
+                           cpus = 2)
+
+error <- tune.splsda$error.rate  # error rate per component for the keepX grid
+error
+ncomp <- tune.splsda$choice.ncomp$ncomp # optimal number of components based on t-tests
+ncomp
+
+select.keepX <- tune.splsda$choice.keepX[1:ncomp]  # optimal number of variables to select
+select.keepX
+
+plot(tune.splsda, col = color.jet(3))
+```
+
+
+## Make the final plot
+
+```{r}
+
+MyResult.splsda <-splsda(X, Y, ncomp = ncomp, keepX = select.keepX,
+                         near.zero.var=TRUE) 
+# Asses performance
+set.seed(40)
+perf.srbct <- perf(MyResult.splsda, validation = "Mfold", folds = 5,
+                   dist = 'max.dist', nrepeat = 75,
+                   progressBar = F, cpus = 2) 
+perf.srbct$error.rate
+plot(perf.srbct, col = color.mixo(5))
+
+### Plot graphs
+pls12<-plotIndiv(MyResult.splsda, ind.names = FALSE, legend=TRUE, comp = c(1,2),
+          ellipse = TRUE, star = TRUE, title = 'sPLS-DA comp 1 & 2',
+          X.label = 'PLS-DA 1', Y.label = 'PLS-DA 2')
+pls13<-plotIndiv(MyResult.splsda, ind.names = FALSE, legend=TRUE, comp = c(1,3),
+          ellipse = TRUE, star = TRUE, title = 'sPLS-DA comp 1 & 3',
+          X.label = 'PLS-DA 1', Y.label = 'PLS-DA 3')
+
+gg<-ggarrange(pls12[[3]], pls13[[3]], common.legend = T)
+ggsave(gg, filename = "Metabolome/Figures/PLS_DA_1_2.svg", device = "svg",  
+       width = 14, height = 7.5)
+
+# Loadings
+# Need to be saved manually
+plotLoadings(MyResult.splsda, comp = 1, title = 'Loadings on component 1', 
+             contrib = 'max', method = 'mean', size.name = 1, name.var.complete = T,size.title = 1.5, border = T)
+plotLoadings(MyResult.splsda, comp = 2, title = 'Loadings on component 2', 
+             contrib = 'max', method = 'mean', size.name = 0.75, name.var.complete = T,size.title = 1.5, border = T)
+plotLoadings(MyResult.splsda, comp = 3, title = 'Loadings on component 3', 
+             contrib = 'max', method = 'mean', size.name = 0.75, name.var.complete = T,size.title = 1.5, border = T)
+```
+
+Figure have then been manually formatted to make them consistent with rest of the paper.
+
+Save the workspace.
+```{r}
+save.image("Metabolome/RData/Metabolome.RData")
+```

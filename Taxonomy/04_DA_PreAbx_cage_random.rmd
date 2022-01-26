@@ -1,0 +1,367 @@
+---
+title: "DA at start"
+author: "Stefano Romano"
+date: "October 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages and data.
+
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2", "ggnewscale",
+                      "propr", "devtools", "ggpubr", "vegan", "RColorBrewer", "car", 
+                      "DHARMa", "glmmTMB", "lme4", "papeR")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(car)
+library(lme4)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggnewscale)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(CoDaSeq)
+library(ggrepel)
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+phyl_yy_in<-readRDS("Taxonomy/RDS/Phyloseq_filtered_species.rds")
+```
+
+Select only samples for the correct timepoint: _PRE-ABX_
+```{r}
+phyl_yy_in<-subset_samples(phyl_yy_in, Timepoint == "PRE_Abx")
+```
+
+Verify whether there are taxa with re. abund of 0 on all samples
+
+```{r}
+ntaxa(phyl_yy_in)
+x<-genefilter_sample(phyl_yy_in, filterfun_sample(function(x) x == 0), A=1*nsamples(phyl_yy_in))
+x<-!(x)
+phyl_yy<-prune_taxa(x, phyl_yy_in)
+ntaxa(phyl_yy)
+```
+
+Keep only taxe that have a rel. abund. > 0 in at least 10% of the samples.
+We check the data manully and we verified that this treshold was the most appropriate for the data.
+
+```{R}
+# Keep only species that ahave rel abund > 0 in at least 10% samples
+wh0 <- genefilter_sample(phyl_yy, filterfun_sample(function(x) x > 0), A=0.1*nsamples(phyl_yy))
+phyl_yy <- prune_taxa(wh0, phyl_yy)
+ntaxa(phyl_yy)
+x<-taxa_names(phyl_yy_in)
+setdiff(x,taxa_names(phyl_yy))
+```
+
+Create a new df including rel. ab. and metadata
+
+```{r}
+all(rownames(as.data.frame(t(otu_table(phyl_yy)))) == rownames(meta(phyl_yy)))
+# data can be merged
+df_m<-cbind.data.frame(as.data.frame(t(otu_table(phyl_yy))), meta(phyl_yy))
+tax_name<-taxa_names(phyl_yy)
+```
+
+Look at the minimum values to correct the transformation
+```{R}
+otu_table(phyl_yy) %>% as.vector() %>% sort(decreasing = F) %>% unique() %>% head
+```
+
+
+Total number of transformation tested
+
+- LOG 
+- LOG add 0 after (LOG zero)
+- CLR
+- ArcSin 
+- LOGIT 
+
+
+# Run full models and look how they are 
+```{R  message=FALSE, warning=FALSE}
+# Create lists of lmm for each taxa
+l_glm_logbefore<-vector(mode = "list", length = length(tax_name))
+names(l_glm_logbefore)<-tax_name
+l_glm_logZero<-l_glm_logbefore
+l_glm_clr<-l_glm_logbefore
+l_glm_arcsinbefore<-l_glm_logbefore
+l_glm_logitbefore<-l_glm_logbefore
+
+# make clr
+df_clr<-df_m[,tax_name]
+df_clr[df_clr == 0]<-1e-06
+df_clr<-as.data.frame(codaSeq.clr(df_clr))
+print(all(rownames(df_m) == rownames(df_clr)))
+df_clr<-cbind.data.frame(df_clr, df_m)
+
+for(i in 1:length(tax_name)){
+  # LOG 
+  l_before<-log2(df_m[,tax_name[i]]+1e-06) 
+  # LOG ZERO
+  l_zero<-log2(df_m[,tax_name[i]])
+  l_zero[is.na(l_zero) | is.infinite(l_zero)]<-0
+  # ArcSin
+  arcs_before<-asin(sqrt(df_m[,tax_name[i]]+1e-06))
+  # LOGIT
+  logit_before<-logit(df_m[,tax_name[i]]+1e-06) 
+  # Create the models
+  print(tax_name[i])
+  print("Log")
+  l_glm_logbefore[[i]]<-lmer(l_before ~ receiver + (1|cage_mice), data = df_m)
+  print("Log zero")
+  l_glm_logZero[[i]]<-lmer(l_zero ~ receiver + (1|cage_mice), data = df_m)
+  print("CLR")
+  l_glm_clr[[i]]<-lmer(df_clr[,i] ~ receiver + (1|cage_mice), data = df_clr)
+  print("ArcSin")
+  l_glm_arcsinbefore[[i]]<-lmer(arcs_before ~ receiver + (1|cage_mice), data = df_m)
+  print("LOGIT")
+  l_glm_logitbefore[[i]]<-lmer(logit_before ~ receiver + (1|cage_mice), data = df_m)
+ 
+}
+```
+
+Save residuals.
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+
+for(i in 1:length(tax_name)){
+  # log 
+  path<-"Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOG/"
+  dir.create("Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOG", recursive = T)
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logbefore[[i]]))
+  qqline(residuals(l_glm_logbefore[[i]]))
+  dev.off()
+  # LOG ZERO
+  path<-"Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOGZERO/"
+  dir.create("Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOGZERO", recursive = T)
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logZero[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logZero[[i]]))
+  qqline(residuals(l_glm_logZero[[i]]))
+  dev.off()  
+  # CLR
+  dir.create("Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/CLR/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/CLR/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_clr[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_clr[[i]]))
+  qqline(residuals(l_glm_clr[[i]]))
+  dev.off()  
+  # ArcSin 
+  dir.create("Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/ArcSin/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/ArcSin/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_arcsinbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_arcsinbefore[[i]]))
+  qqline(residuals(l_glm_arcsinbefore[[i]]))
+  dev.off()  
+  # LOGIT 
+  dir.create("Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOGIT/", recursive = T)
+  path<-"Taxonomy/Figures/Residuals_species_across_age_only_preAbx_cagerandom/LOGIT/"
+  x<-paste0(path, tax_name[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_glm_logitbefore[[i]]))
+  dev.off()
+  png(paste0(path, tax_name[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_glm_logitbefore[[i]]))
+  qqline(residuals(l_glm_logitbefore[[i]]))
+  dev.off() 
+}
+```
+
+Residuals are checked manually.
+The transformations that result in the best residuals are selected and saved below.
+
+## Extract only the contrast of interest
+We will verify whether the specific contrasts are significant.
+We will use the lmm with the best residuals for this.
+For all significant taxa, we will then collect the CLR values and report them in a graph.
+
+```{R message=FALSE, warning=FALSE}
+library(emmeans)
+emm_options(contrast = list(infer = c(TRUE, T)))
+
+# Set up contrasts
+y<-c(1,0,0)
+o<-c(0,1,0)
+
+# CLR
+l_contr<-l_glm_clr
+for(i in 1:length(l_contr)){
+  print(i)
+  emm1<-emmeans(l_glm_clr[[i]], specs = ~ receiver)
+  l_contr[[i]]<-contrast(emm1, method = list("Y - O" = y - o), adjust = "none") %>% as.data.frame()}
+
+df_contr <- do.call(rbind.data.frame, l_contr)
+df_contr$padjust<-p.adjust(df_contr$p.value, method = "fdr")
+
+# ArcSin
+# Subset only relevant taxa
+relevant_arc<-c("k__Bacteria|p__Actinobacteria|c__Coriobacteriia|o__Eggerthellales|f__Eggerthellaceae|g__Adlercreutzia|s__Adlercreutzia_equolifaciens",
+            "k__Bacteria|p__Actinobacteria|c__Coriobacteriia|o__Eggerthellales|f__Eggerthellaceae|g__Asaccharobacter|s__Asaccharobacter_celatus",
+            "k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Bacteroides|s__Bacteroides_caecimuris",
+            "k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Enterococcaceae|g__Enterococcus|s__Enterococcus_faecalis",
+            "k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_reuteri",
+            "k__Bacteria|p__Firmicutes|c__Clostridia|o__Clostridiales|f__Lachnospiraceae|g__Lachnospiraceae_unclassified|s__Lachnospiraceae_bacterium_3_2",
+            "k__Bacteria|p__Proteobacteria|c__Gammaproteobacteria|o__Enterobacterales|f__Enterobacteriaceae|g__Escherichia|s__Escherichia_coli")                                                            
+
+l_contr_arc<-l_glm_arcsinbefore
+for(i in 1:length(l_contr_arc)){
+  print(i)
+  emm1<-emmeans(l_glm_arcsinbefore[[i]], specs = ~ receiver)
+  l_contr_arc[[i]]<-contrast(emm1, method = list("Y - O" = y - o), adjust = "none") %>% as.data.frame()}
+
+df_contr_arc <- do.call(rbind.data.frame, l_contr_arc)
+df_contr_arc$padjust<-p.adjust(df_contr_arc$p.value, method = "fdr")
+all(relevant_arc %in% rownames(df_contr_arc))
+
+df_contr_arc<-df_contr_arc[which(rownames(df_contr_arc) %in% relevant_arc),]
+arc_sign<-rownames(subset(df_contr_arc,  padjust <= 0.05))
+
+# LOGZERO
+# Subset only relevant taxa
+relevant_logzero<-c("k__Bacteria|p__Bacteroidetes|c__Bacteroidia|o__Bacteroidales|f__Bacteroidaceae|g__Bacteroides|s__Bacteroides_thetaiotaomicron",
+            "k__Bacteria|p__Deferribacteres|c__Deferribacteres|o__Deferribacterales|f__Deferribacteraceae|g__Mucispirillum|s__Mucispirillum_schaedleri",
+            "k__Bacteria|p__Firmicutes|c__Bacilli|o__Lactobacillales|f__Lactobacillaceae|g__Lactobacillus|s__Lactobacillus_murinus",
+            "k__Bacteria|p__Firmicutes|c__Clostridia|o__Clostridiales|f__Lachnospiraceae|g__Acetatifactor|s__Acetatifactor_muris",
+            "k__Bacteria|p__Firmicutes|c__Clostridia|o__Clostridiales|f__Ruminococcaceae|g__Acutalibacter|s__Acutalibacter_muris",
+            "k__Bacteria|p__Firmicutes|c__Clostridia|o__Clostridiales|f__Lachnospiraceae|g__Lachnospiraceae_unclassified|s__Lachnospiraceae_bacterium_28_4",
+            "k__Bacteria|p__Firmicutes|c__Erysipelotrichia|o__Erysipelotrichales|f__Erysipelotrichaceae|g__Faecalibaculum|s__Faecalibaculum_rodentium")                                                
+
+
+l_contr_log<-l_glm_logZero
+for(i in 1:length(l_contr_log)){
+  print(i)
+  emm1<-emmeans(l_glm_logZero[[i]], specs = ~ receiver)
+  l_contr_log[[i]]<-contrast(emm1, method = list("Y - O" = y - o), adjust = "none") %>% as.data.frame()}
+
+df_contr_log <- do.call(rbind.data.frame, l_contr_log)
+df_contr_log$padjust<-p.adjust(df_contr_log$p.value, method = "fdr")
+all(relevant_logzero %in% rownames(df_contr_log))
+
+df_contr_log<-df_contr_log[which(rownames(df_contr_log) %in% relevant_logzero),]
+log_sign<-rownames(subset(df_contr_log,  padjust <= 0.05))
+
+
+```
+
+
+Select only the taxa w p-value <= 0.05
+
+```{R message=FALSE, warning=FALSE}
+all(c(relevant_logzero, relevant_arc) %in% rownames(df_contr))
+
+# Remove from df_clr the taxa relevant in the other transformations
+nrow(df_contr)
+df_contr_sign<-df_contr[-1*(which(rownames(df_contr) %in% c(relevant_logzero, relevant_arc))),]
+nrow(df_contr_sign)
+c(relevant_logzero, relevant_arc) %>% length()
+
+# Select the significant in df clr
+df_contr_sign<-subset(df_contr_sign, padjust <= 0.05)
+
+# Check that all species in other transf are in the df clr
+c(log_sign, arc_sign)
+# Merge sign taxa
+df_contr_sign<-rbind.data.frame(df_contr_sign, df_contr[which(rownames(df_contr) %in% c(log_sign, arc_sign)),])
+
+shortaxa<-rownames(df_contr_sign)
+
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][7]
+  x<-gsub("s__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+}
+shortaxa<-gsub("[.][0-9]*", "", shortaxa)
+df_contr_sign$short<-shortaxa
+
+df_contr_sign$short<-as.factor(df_contr_sign$short)
+for(i in 1:nrow(df_contr_sign)){
+  if(df_contr_sign[i,]$estimate < 0){
+    df_contr_sign$enrich[i]<-"Enriched O"
+  } else {df_contr_sign$enrich[i]<-"Enriched Y"}
+}
+df_contr_sign$enrich <- factor(df_contr_sign$enrich, levels = c("Enriched O", "Enriched Y"))
+
+
+gg_clr<-ggplot(df_contr_sign, aes(reorder(short, -estimate), estimate*-1, fill = enrich)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_wrap(~contrast) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_fill_grey() +
+  geom_errorbar(aes(ymin = (estimate - SE)*-1, ymax =   (estimate + SE) *-1), width = 0.2) +
+  ylab("Mean difference in CLR and SE") +
+  xlab("Species") +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text = element_text(size = 14), panel.background = element_blank(), panel.grid = element_blank(), axis.title = element_text(size =18)) 
+
+gg_clr
+
+ggsave("Taxonomy/Figures/CLR_onlyfdr_DA_Pre_Abx.svg", device = "svg", width = 8, height = 8)
+
+```
+
+Create a table including the info about the normalization method used.
+```{R message=FALSE, warning=FALSE}
+df_contr_sign<-df_contr[-1*(which(rownames(df_contr) %in% c(relevant_logzero, relevant_arc))),]
+df_contr_sign<-subset(df_contr_sign, padjust <= 0.05)
+df_contr_sign$Transformation<-rep("CLR", length = nrow(df_contr_sign))
+
+df_log_sign<-subset(df_contr_log,  padjust <= 0.05)
+df_log_sign$Transformation<-rep("LogZero", length = nrow(df_log_sign))
+
+
+df_arcsin_sign<-subset(df_contr_arc,  padjust <= 0.05)
+df_arcsin_sign$Transformation<-rep("ArcSin", length = nrow(df_arcsin_sign))
+df_transf_sign<-rbind.data.frame(df_contr_sign, df_log_sign, df_arcsin_sign)
+  
+  
+dir.create("Taxonomy/Tables/", recursive = T)
+write.table(df_transf_sign, "Taxonomy/Tables/DA_species_Pre_Abx.txt", sep = ",")
+write.table(df_contr, "Taxonomy/Tables/DA_allSpecies_Pre_Abx.txt", sep = ",")
+
+```
+
+### Save image
+```{r}
+save.image("Taxonomy/RData/07_DA_lm_onlyAbx_cagerandom.RData")
+```

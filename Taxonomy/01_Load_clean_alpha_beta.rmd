@@ -1,0 +1,998 @@
+---
+title: "Formatting, alpha, and beta"
+author: "Stefano Romano"
+date: "Oct 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+```{r, message=F}
+list.of.packages <- c("ggplot2", "reshape2", "dplyr", "ggnewscale", "ggrepel", "lme4", "FSA",
+                      "devtools", "ggpubr", "vegan", "RColorBrewer", "emmeans", "car")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(dplyr)
+library(lme4)
+library(RColorBrewer)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(ggrepel)
+library(ggnewscale)
+library(FSA)
+library(emmeans)
+library(car)
+
+# To install pairwiseAdonis visit: https://github.com/pmartinezarbizu/pairwiseAdonis
+library(pairwiseAdonis)
+# To install ggConvexHull visit: https://github.com/cmartin/ggConvexHull
+library(ggConvexHull)
+```
+
+
+# Load the species rel ab. calculated including the unknown.
+
+We are using only the species.
+Note, this does not include mice and virus sequences.
+
+```{R, laod data and split taxonomic ranks}
+tax <- read.delim("Raw_data/merged_metaphlan3_spec.txt", sep = "\t", stringsAsFactors = F)
+```
+
+### Load meta data and format
+
+```{r, message=F}
+# Load metadata 
+m<-read.delim("Metadata.txt", header = T, stringsAsFactors = F)
+```
+
+### Double check that datset is clean
+
+```{R}
+grep("Eukar*", rownames(sp))
+grep("Chlorop*", rownames(sp))
+grep("Mitoc*", rownames(sp))
+# Dataset is clean
+
+sapply(m, class)
+# Need to make them factors
+m$receiver<-factor(m$receiver, levels = c("Y", "O", "M"))
+m$treat<-factor(m$treat, levels = c("Y", "O", "M", "Abx"))
+m$timegroups<-as.factor(m$timegroups)
+m$Timepoint<-factor(m$Timepoint, levels = c("PRE_Abx", "POST_FMT", "POST_ABX", "END"))
+m$cage_tg<-as.factor(m$cage_tg)
+m$groups<-as.factor(m$groups)
+
+sapply(m, class)
+```
+
+
+Create the phyloseq object
+```{r, message=FALSE, warning=FALSE}
+sp_phylo<-phyloseq(otu_table(sp, taxa_are_rows = T), sample_data(m))
+sp_phylo
+```
+
+# Alpha
+
+Calculate number of observed species.
+```{r}
+rich<-richness(sp_phylo, index = "observed")
+dir.create("Taxonomy/Figures", recursive = T)
+```
+
+Merge the data with meta-data and and plot.
+```{R}
+all(rownames(rich) == rownames(meta(sp_phylo)))
+rich_m<-cbind.data.frame(rich, meta(sp_phylo))
+rich_m$Timepoint<-factor(as.character(rich_m$Timepoint), levels = c("PRE_Abx", "POST_ABX", "POST_FMT", "END"))
+
+ggplot(rich_m, aes(Timepoint, observed, fill = Timepoint)) +
+  geom_boxplot(outlier.colour = "none") +
+  geom_jitter(width = 0.2, aes(color = cage)) +
+  facet_wrap(~groups) +
+  scale_fill_brewer() +
+  theme_bw() +
+  labs(title = "Number of observed species per mice type and timepoint")+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggsave("Taxonomy/Figures/Observed_species.svg", device = "svg", width = 8)
+
+ggplot(rich_m, aes(Timepoint, observed, fill = Timepoint)) +
+  geom_boxplot(outlier.colour = "none") +
+  geom_jitter(width = 0.2) +
+  facet_wrap(~receiver) +
+  scale_fill_brewer() +
+  theme_bw() +
+  labs(title = "Number of observed species per mice type and timepoint")+
+  theme(axis.text.x = element_text(angle = 90))
+
+ggsave("Taxonomy/Figures/Observed_species_allmice.svg", device = "svg", width = 8, height = 5)
+
+```
+
+Plot the start for all groups.
+```{r}
+
+rich_m_s<-subset(rich_m, Timepoint == "PRE_Abx")
+ggplot(rich_m_s, aes(receiver, observed, fill = receiver)) +
+  geom_boxplot(outlier.colour = "none") +
+  geom_jitter(width = 0.2, aes(shape = cage_mice), size = 4) +
+  scale_fill_brewer() +
+  scale_shape_manual(values = 1:32) +
+  theme_bw() +
+  labs(title = "Number of observed species per mice group Pre_Abx")+
+  theme(axis.text = element_text(size = 12), legend.position = "none")
+ggsave("Taxonomy/Figures/Observed_species_allmice_start.svg", device = "svg", width = 8, height = 5)
+
+```
+
+Verify whether there is a statistically significant difference between number of observed species.
+```{r}
+s_m<-subset(rich_m, Timepoint == "PRE_Abx")
+
+x<-lmer(observed ~ receiver + (1|cage_mice), data = s_m)
+Anova(x, type = "III")
+emm_options(contrast = list(infer = c(TRUE, T)))
+emmeans(x, pairwise ~ receiver, adjust = "fdr") 
+```
+
+Investigate by mice type: change in observed species across timepoints.
+```{R}
+# Y
+s_m<-subset(rich_m, receiver == "Y")
+x<-lmer(observed ~ Timepoint + (1|cage_mice), data = s_m)
+emmeans(x, pairwise ~ Timepoint)
+
+# O
+s_m<-subset(rich_m, receiver == "O")
+x<-lmer(observed ~ Timepoint + (1|cage_mice), data = s_m)
+emmeans(x, pairwise ~ Timepoint)
+
+# M
+s_m<-subset(rich_m, receiver == "M")
+x<-lmer(observed ~ Timepoint + (1|cage_mice), data = s_m)
+emmeans(x, pairwise ~ Timepoint)
+```
+
+# Ordination
+
+## Calculate beta diversity
+Both JSD and Bray-Curtis have been used. 
+The latter has been used as resulted in a clearer pattern in the ordination.
+
+```{r}
+sp_jsd<-phyloseq::distance(sp_phylo, method= "jsd", na.rm=F)
+sp_bray<-phyloseq::distance(sp_phylo, method= "bray", na.rm=F)
+
+# Make PCoA plot
+sp_ord_jsd<-ordinate(sp_phylo, method = "PCoA", distance = sp_jsd)
+sp_ord_bray<-ordinate(sp_phylo, method = "PCoA", distance = sp_bray)
+
+```
+
+
+To calculate the proportion of variance explained we need to account for the negative eigenvalues.
+Apparently _phyloseq_ does not do that.
+We will account for negative eigenvalues manually.
+Negative eigenvalues will be set to 0
+
+## JSD
+
+```{r, message=FALSE, warning=FALSE}
+eig<-sp_ord_jsd$values
+eig[eig < 0]<-0
+axis1<-paste("Axis 1 [", round(eig[1,1]/sum(eig[,1]),2)*100, "%]", sep = "")
+axis2<-paste("Axis 2 [", round(eig[2,1]/sum(eig[,1]),2)*100, "%]", sep = "")
+
+(jsd_pcoa<-plot_ordination(sp_phylo, sp_ord_jsd, 
+                "samples", color="Timepoint", shape = "receiver") +
+                 geom_point(aes(shape = receiver), color = "black",size = 4.5) +
+                theme_bw() +
+                scale_colour_brewer(palette = "Set2") +
+                geom_point(size = 3.5) +
+    labs(title = "Microbiota structure inferred using Jensen-Shannon divergence (JSD)", shape = "Receiver") +
+    theme(plot.title = element_text(face = "bold"), panel.grid = element_blank()) +
+    xlab(axis1) +
+    ylab(axis2))
+
+ggsave(jsd_pcoa, filename = "Taxonomy/Figures/PCoA_overall_jsd.svg", 
+       device = "svg", width = 8, height = 8)
+
+```
+
+## BRAY
+
+```{r, message=FALSE, warning=FALSE}
+eig<-sp_ord_bray$values
+eig[eig < 0]<-0
+axis1<-paste("Axis 1 [", round(eig[1,1]/sum(eig[,1]),2)*100, "%]", sep = "")
+axis2<-paste("Axis 2 [", round(eig[2,1]/sum(eig[,1]),2)*100, "%]", sep = "")
+
+(bray_pcoa<-plot_ordination(sp_phylo, sp_ord_bray, 
+                "samples", color="Timepoint", shape = "receiver") +
+                 geom_point(aes(shape = receiver), color = "black",size = 4.5) +
+                theme_bw() +
+                scale_colour_brewer(palette = "Set2") +
+                geom_point(size = 3.5) +
+    labs(title = "Microbiota structure inferred using Bray-Curtis dissimilarities", shape = "Receiver") +
+    theme(plot.title = element_text(face = "bold"), panel.grid = element_blank()) +
+    xlab(axis1) +
+    ylab(axis2))
+ggsave(bray_pcoa, filename = "Taxonomy/Figures/PCoA_overall_bray.svg", 
+       device = "svg", width = 8, height = 8)
+
+```
+
+## Permanova
+We need to account for the cage effect in the dataset.
+Format a df for permanova.
+```{r, message=FALSE, warning=FALSE}
+set.seed(987) 
+all(rownames(t(otu_table(sp_phylo))) == rownames(meta(sp_phylo)))
+df_m<-cbind.data.frame(t(otu_table(sp_phylo)),meta(sp_phylo))
+```
+
+
+#### JSD
+```{r}
+mod1 <- ordinate(sp_phylo, method = "CAP", formula = ~ Timepoint, Condition(cage_mice), distance = sp_jsd)
+set.seed(56987)
+h <- how(blocks = df_m$cage_mice, nperm = 10000)
+
+sed_perm<-anova.cca(mod1, data = df_m, permutations = h, parallel = 2)
+sed_perm
+RsquareAdj(mod1)
+```
+
+#### Bray
+```{r}
+mod1 <- ordinate(sp_phylo, method = "CAP", formula = ~ Timepoint, Condition(cage_mice), distance = sp_bray)
+set.seed(56987)
+h <- how(blocks = df_m$cage_mice, nperm = 10000)
+
+sed_perm<-anova.cca(mod1, data = df_m, permutations = h, parallel = 2)
+sed_perm
+RsquareAdj(mod1)
+```
+
+#### Pairwise permanova
+The p-values seem to not be adjusted in the function _pairwise.adonis2_
+Hence, they will be corrected manually.
+
+#### JSD
+```{r}
+(adp_treat_timegroups_strata_cage<-pairwise.adonis2(sp_jsd ~ Timepoint, perm = 10000, data = df_m, strata = 'cage_mice'))
+pv<-unlist(lapply(adp_treat_timegroups_strata_cage[-1], function(x) x$`Pr(>F)`[1]))
+p.adjust(pv, method = "BH")
+```
+
+#### BRAY
+```{r}
+(adp_treat_timegroups_strata_cage<-pairwise.adonis2(sp_bray ~ Timepoint, perm = 10000, data = df_m, strata = 'cage_mice'))
+pv<-unlist(lapply(adp_treat_timegroups_strata_cage[-1], function(x) x$`Pr(>F)`[1]))
+p.adjust(pv, method = "BH")
+```
+
+## Test differences only in Old and Young Pre and Post FMT
+```{r, message=FALSE, warning=FALSE}
+pre_end_sp_phylo<-subset_samples(sp_phylo, Timepoint=="PRE_Abx" | Timepoint=="POST_FMT"  )
+pre_end_sp_phylo<-subset_samples(pre_end_sp_phylo, receiver!="M" & treat !="M")
+pre_end_sp_phylo<-subset_samples(pre_end_sp_phylo,  treat!= "Abx")
+
+pre_end_sp_phylo<-filter_taxa(pre_end_sp_phylo, function(x) sum(x) > 0, TRUE)
+
+# calculate JSD
+pre_end_jsd<-phyloseq::distance(pre_end_sp_phylo, method= "jsd", na.rm=F)
+
+df_m<-meta(pre_end_sp_phylo)
+```
+
+Perform pairwise comparisons.
+```{r}
+(pre_post_yo_oy_strata<-pairwise.adonis2(pre_end_jsd ~ timegroups,perm = 10000, data = df_m, strata = 'cage_mice'))
+pv<-unlist(lapply(pre_post_yo_oy_strata[-1], function(x) x$`Pr(>F)`[1]))
+p.adjust(pv, method = "BH")
+```
+
+# Ordination Pre and Post FMT
+
+Function _bedadisp_ will be used.
+PCoA will then be extracted to run _envfit_ on it.
+```{r, message=F}
+bd<-betadisper(pre_end_jsd, group = df_m$timegroups, add = T, type = "centroid")
+plot(bd)
+```
+
+Make graph
+```{r}
+# Select 2 axis
+ord_meta<-bd$vectors[,1:2]
+all(rownames(df_m) == rownames(ord_meta))
+ord_meta<-cbind.data.frame(ord_meta, df_m)
+
+# Caluclate proportion of variacne explained 
+eig<-bd$eig # There are no negative eigen
+axis1<-paste("Axis 1 [", round(eig[1]/sum(eig),2)*100, "%]", sep = "")
+axis2<-paste("Axis 2 [", round(eig[2]/sum(eig),2)*100, "%]", sep = "")
+
+# Make a graph 
+(g<-ggplot(ord_meta, aes(PCoA1, PCoA2, fill = Timepoint)) +
+  geom_convexhull(alpha = 0.3, aes(fill = Timepoint, colour = timegroups), show.legend = F) +
+  scale_color_manual(values = rep("black", 8)) +
+  scale_fill_brewer(palette = "Set2") +
+  new_scale_color() + 
+  geom_point(color = "black", size = 4.5) +
+  geom_point(aes(color = Timepoint), size = 3.5) +
+  scale_color_brewer(palette = "Set2") +
+  labs(title = "Gut microbiota structure pre and post FMT in young mice receiving aged stool", shape = "Receiver", color = "Donor") +
+  xlab(axis1) +
+  ylab(axis2) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 14, face = "bold"), 
+        panel.grid = element_blank(), 
+        legend.position = "none"))
+```
+
+Plot ordination + Species that best correlate with the clustering.
+```{r, message=FALSE, warning=FALSE}
+sf <- envfit(bd, as.data.frame(t(otu_table(pre_end_sp_phylo))), 
+             display = "sites", permutations = 10000) 
+
+# Get the scores for plotting
+vec.sp.df.scores<-as.data.frame(scores(sf, display = "vector"))
+ef.df<-as.data.frame(sf$vectors$arrows*sqrt(sf$vectors$r))
+ef.df$species<-rownames(ef.df)
+
+# Colecting only taxa with significant pvalues
+A <- as.list(sf$vectors)
+pvals<-as.data.frame(A$pvals)
+arrows<-as.data.frame(A$arrows*sqrt(A$r))
+C<-cbind(arrows, pvals)
+C$padj<-p.adjust(C$`A$pvals`, method = "fdr")
+Cred<-subset(C,padj<0.005)
+Cred <- cbind(Cred, Family = rownames(Cred))
+
+# Collect only taxa that have the highest degree of variation along the axis
+cap1<-subset(Cred, PCoA1 >= 0.43 | PCoA2 >= 0.43 | PCoA2 <= -0.43 |  PCoA1 <= -0.43)
+
+taxa<-rownames(cap1)
+shortaxa<-taxa
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][7]
+  x<-gsub("s__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+
+}
+
+# Change naming and position manually 
+
+cap1$shortaxa<-shortaxa
+
+cap1_1<-subset(cap1, shortaxa == "Bifidobacterium animalis")
+cap1_2<-subset(cap1, shortaxa == "Adlercreutzia equolifaciens")
+
+cap1_4<-subset(cap1, shortaxa == "Asaccharobacter celatus")
+cap1_19<-subset(cap1, shortaxa == "Firmicutes bacterium ASF500")
+cap1_19$shortaxa<-"Firmicutes sp ASF500"
+cap1_6<-subset(cap1, shortaxa == "Enterorhabdus caecimuris")
+cap1_7<-subset(cap1, shortaxa == "Bacteroides caecimuris")
+cap1_8<-subset(cap1, shortaxa == "Bacteroides uniformis")
+cap1_5<-subset(cap1, shortaxa == "Muribaculaceae bacterium DSM 103720")
+cap1_5$shortaxa<-"Muribaculaceae sp DSM 103720"
+cap1_9<-subset(cap1, shortaxa == "Parabacteroides distasonis")
+cap1_10<-subset(cap1, shortaxa == "Enterococcus faecalis")
+cap1_11<-subset(cap1, shortaxa == "Lactobacillus johnsonii")
+cap1_12<-subset(cap1, shortaxa == "Acutalibacter muris")
+cap1_13<-subset(cap1, shortaxa == "Clostridium cocleatum")
+cap1_14<-subset(cap1, shortaxa == "Prevotella sp MGM2")
+cap1_15<-subset(cap1, shortaxa == "Faecalibaculum rodentium")
+cap1_16<-subset(cap1, shortaxa == "Parabacteroides goldsteinii")
+cap1_17<-subset(cap1, shortaxa == "Oscillibacter sp 1 3")
+cap1_18<-subset(cap1, shortaxa == "Escherichia coli")
+cap1_3<-subset(cap1, shortaxa == "Akkermansia muciniphila")
+cap1_20<-subset(cap1, shortaxa == "Dorea sp 5 2")
+
+
+library(ggrepel)
+gs<- g +   geom_segment(data = cap1, stat = "identity",
+              mapping = aes(x = 0, xend = PCoA1/3, y = 0, yend = PCoA2/3),
+              arrow = arrow(length = unit(2, "mm"), type = "open"), 
+              colour = "#C0C0C0", 
+              inherit.aes = F, 
+              linejoin = "mitre",
+              arrow.fill = "#C0C0C0") +
+  geom_label_repel(data = cap1_1,  #"Bifidobacterium animalis"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_1$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.5, nudge_y = 0.01, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_2,  #Adlercreutzia equolifaciens"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_2$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.2, nudge_y = -0.02, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+  geom_label_repel(data = cap1_19, 
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_19$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.15, nudge_y = -0.04, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+    geom_label_repel(data = cap1_3,  #"Akkermansia muciniphila"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_3$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.05, nudge_y = 0.1, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_4,  #"Asaccharobacter celatus"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_4$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.5, nudge_y = 0, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_7,  #"Bacteroides caecimuris"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_7$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.01, nudge_y = 0.1, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_6,  #"Enterorhabdus caecimuris
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_6$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.5, nudge_y = -0.01, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+    geom_label_repel(data = cap1_5,  #"Muribaculaceae sp DSM 103720"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_5$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.1, nudge_y = -00.1, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_8,  #"Bacteroides uniformis"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_8$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.2, nudge_y = 0.03, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+          geom_label_repel(data = cap1_9,  #"Parabacteroides distasonis"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_9$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0, nudge_y = 0.2, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_10,  #"Enterococcus faecalis"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_10$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.05, nudge_y = -0.02, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_11,  #"Lactobacillus johnsonii"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_11$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.1, nudge_y = 0.05, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_12,  #"Acutalibacter muris"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_12$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.1, nudge_y = -0.5, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_13,  #"Clostridium cocleatum"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_13$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.02, nudge_y = 0.05, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_14,  #"Prevotella sp MGM2"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_14$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.1, nudge_y = 0.02, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_15,  #"Faecalibaculum rodentium"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_15$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0, nudge_y = 0.2, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+       geom_label_repel(data = cap1_16,  #"Parabacteroides goldsteinii"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_16$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.05, nudge_y = 0.05, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+      geom_label_repel(data = cap1_17,  #"Oscillibacter sp 1 3"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_17$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.1, nudge_y = -0.02, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+        geom_label_repel(data = cap1_18,  #"Escherichia coli"
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_18$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = -0.05, nudge_y = 0.01, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) +
+       geom_label_repel(data = cap1_20,  #Dorea
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1_20$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0.05, nudge_y = 0.01, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3) 
+gss_prepost<-gs +   annotate("label", label = "PRE-FMT YO", x = -0.12, y = -0.16, size = 4.5, colour = "black",fontface = 2) +
+  annotate("label", label = "PRE-FMT OY", x = -0.15, y = -0.025, size = 4.5, colour = "black",fontface = 2) +
+  annotate("label", label = "PRE-FMT YY", x = -0.03, y = -0.085, size = 4.5, colour = "black",fontface = 2) +
+  annotate("label", label = "POST-FMT YO", x = -0.05, y = 0.1, size = 4.5, colour = "black",fontface = 2) +
+  annotate("label", label = "POST-FMT YY", x = 0.275, y = -0.08, size = 4.5, colour = "black",fontface = 2) +
+  annotate("label", label = "POST-FMT OY", x = 0.25, y = 0.1, size = 4.5, colour = "black",fontface = 2) 
+gss_prepost
+
+ggsave(gss_prepost, filename = "Taxonomy/Figures/PCoA_pre_post_FMT_pluspecies.svg", 
+       device = "svg", width = 8, height = 8)
+```
+
+
+# PCoA for start plus Procrustes analyses
+
+*START* timepoint _Pre-Abx_
+```{r, message=FALSE, warning=FALSE}
+pre_abx_phylo<-subset_samples(sp_phylo, Timepoint=="PRE_Abx")
+pre_abx_phylo<-filter_taxa(pre_abx_phylo, function(x) sum(x) > 0, TRUE)
+
+
+# calculate JSD
+sample_names(pre_abx_phylo)<-gsub(".*_","", sample_names(pre_abx_phylo))
+pre_abx_jsd<-phyloseq::distance(pre_abx_phylo, method= "jsd", na.rm=F)
+
+# Create df
+all(rownames(t(otu_table(pre_abx_phylo))) == rownames(meta(pre_abx_phylo)))
+df_m_preabx<-cbind.data.frame(t(otu_table(pre_abx_phylo)), meta(pre_abx_phylo))
+
+# PCoA
+bd_preabx<-betadisper(pre_abx_jsd, group = df_m_preabx$receiver, add = T, type = "centroid")
+plot(bd_preabx)
+```
+
+Make a PCoA plot including species
+```{r, message=FALSE, warning=FALSE}
+ord_meta<-bd_preabx$vectors[,1:2]
+all(rownames(df_m_preabx) == rownames(ord_meta))
+ord_meta<-cbind.data.frame(ord_meta, df_m_preabx)
+
+
+# Calculate proportion of variacne explained 
+eig<-bd_preabx$eig
+axis1<-paste("Axis 1 [", round(eig[1]/sum(eig),2)*100, "%]", sep = "")
+axis2<-paste("Axis 2 [", round(eig[2]/sum(eig),2)*100, "%]", sep = "")
+
+# Order the factors of age as Y, M and O
+ord_meta$receiver<-factor(ord_meta$receiver, levels = c("Y", "M", "O"))
+
+# Make a graph
+(g_preabx<-ggplot(ord_meta, aes(PCoA1, PCoA2, col = receiver)) +
+  geom_convexhull(alpha = 0.3,aes(fill = receiver, color = receiver), show.legend = F) +
+  scale_color_manual(values = rep("black", 9)) +
+  scale_fill_brewer(palette = "RdYlBu") +
+  new_scale_color() +  
+  geom_point(color = "black",size = 4.5) +
+  geom_point(aes(color = receiver),size = 3.5) +
+  scale_color_brewer(palette = "RdYlBu") +
+  labs(title = "Gut microbiota structure at the beginning of the experiment across mice ages", shape = "Receiver", color = "Donor") +
+  xlab(axis1) +
+  ylab(axis2) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 13, face = "bold"), legend.position = "none", panel.grid = element_blank()))
+
+sf <- envfit(bd_preabx, as.data.frame(t(otu_table(pre_abx_phylo))), 
+             display = "sites", permutations = 10000) 
+
+# Get the scores for plotting
+vec.sp.df.scores<-as.data.frame(scores(sf, display = "vector"))
+ef.df<-as.data.frame(sf$vectors$arrows*sqrt(sf$vectors$r))
+ef.df$species<-rownames(ef.df)
+
+# Collecting only taxa with significant pvalues
+A <- as.list(sf$vectors)
+pvals<-as.data.frame(A$pvals)
+arrows<-as.data.frame(A$arrows*sqrt(A$r))
+C<-cbind(arrows, pvals)
+
+C$padj<-p.adjust(C$`A$pvals`, method = "fdr")
+Cred<-subset(C,padj<0.05)
+Cred <- cbind(Cred, Family = rownames(Cred))
+
+# Collecting only Species with the highest degree of variation along the axis
+cap1<-Cred
+taxa<-rownames(cap1)
+shortaxa<-taxa
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][7]
+  x<-gsub("s__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+
+}
+
+cap1$shortaxa<-shortaxa
+library(ggrepel)
+gs_preabx<- g_preabx +   geom_segment(data = cap1, stat = "identity",
+              mapping = aes(x = 0, xend = PCoA1/3, y = 0, yend = PCoA2/3),
+              arrow = arrow(length = unit(2, "mm"), type = "open"), 
+              colour = "#C0C0C0", 
+              inherit.aes = F, 
+              linejoin = "mitre",
+              arrow.fill = "#C0C0C0") +
+  geom_label_repel(data = cap1,  
+            stat = "identity",
+            mapping = aes(x = PCoA1/3, y = PCoA2/3, label=cap1$shortaxa),
+            segment.size  = 0.5,
+            segment.color = "#A9A9A9",
+            direction = "both",
+            size = 4, nudge_x = 0, nudge_y = 0.00, 
+            inherit.aes = F, 
+            point.padding = 0.5,
+            seed = 987, max.iter = 1000, fontface = 3, force = 10)
+
+gss_preabx<-gs_preabx + annotate("label", label = "Y", x = -0.05, y = -0.2, size = 8, colour = "black",fontface = 2) +
+  annotate("label", label = "M", x = -0.2, y = 0.15, size = 8, colour = "black",fontface = 2) +
+  annotate("label", label = "O", x = -0.3, y = -0.05, size = 8, colour = "black",fontface = 2) 
+gss_preabx
+ggsave(gss_preabx, filename = "Taxonomy/Figures/PCoA_preAbx.svg", 
+       device = "svg", width = 8, height = 8)
+```
+
+*Test significance of clustering*
+```{r}
+set.seed(5698)
+# The adjustment is already included
+(pair_pre_abx<-pairwise.adonis(pre_abx_jsd, df_m_preabx$receiver, 
+                                       p.adjust.m = "BH", perm = 10000))
+```
+
+*After antiobiotic treat* 
+timepoint _POST-ABX_
+```{r}
+post_abx_phylo<-subset_samples(sp_phylo, Timepoint=="POST_ABX")
+post_abx_phylo<-filter_taxa(post_abx_phylo, function(x) sum(x) > 0, TRUE)
+
+# calculate JSD
+sample_names(post_abx_phylo)<-gsub(".*_","", sample_names(post_abx_phylo))
+post_abx_jsd<-phyloseq::distance(post_abx_phylo, method= "jsd", na.rm=F)
+
+# Create df
+all(rownames(t(otu_table(post_abx_phylo))) == rownames(meta(post_abx_phylo)))
+df_m_postabx<-cbind.data.frame(t(otu_table(post_abx_phylo)), meta(post_abx_phylo))
+
+# PCoA
+bd_postabx<-betadisper(post_abx_jsd, group = df_m_postabx$receiver, add = T, type = "centroid")
+plot(bd_postabx)
+```
+
+
+*After FMT* 
+timepoint _POST-FMT_
+```{r, message=FALSE, warning=FALSE}
+post_fmt_phylo<-subset_samples(sp_phylo, Timepoint=="POST_FMT")
+post_fmt_phylo<-filter_taxa(post_fmt_phylo, function(x) sum(x) > 0, TRUE)
+
+# calculate JSD
+sample_names(post_fmt_phylo)<-gsub(".*_","", sample_names(post_fmt_phylo))
+post_fmt_jsd<-phyloseq::distance(post_fmt_phylo, method= "jsd", na.rm=F)
+
+# Create df 
+all(rownames(t(otu_table(post_fmt_phylo))) == rownames(meta(post_fmt_phylo)))
+df_m_postfmt<-cbind.data.frame(t(otu_table(post_fmt_phylo)), meta(post_fmt_phylo))
+
+# PCoA
+bd_postfmt<-betadisper(post_fmt_jsd, group = df_m_postfmt$groups, add = T, type = "centroid")
+plot(bd_postfmt)
+```
+
+
+*End of the experiment* 
+timepoint _END_
+```{r, message=FALSE, warning=FALSE}
+end_phylo<-subset_samples(sp_phylo, Timepoint=="END")
+end_phylo<-filter_taxa(end_phylo, function(x) sum(x) > 0, TRUE)
+
+# calculate JSD
+sample_names(end_phylo)<-gsub(".*_","", sample_names(end_phylo))
+end_jsd<-phyloseq::distance(end_phylo, method= "jsd", na.rm=F)
+
+# Create df
+all(rownames(t(otu_table(end_phylo))) == rownames(meta(end_phylo)))
+df_m_end<-cbind.data.frame(t(otu_table(end_phylo)), meta(end_phylo))
+
+# PCoA
+bd_end<-betadisper(end_jsd, group = df_m_end$groups, add = T, type = "centroid")
+plot(bd_end)
+```
+
+## PROTEST
+
+Only matching samples need to be selected.
+
+*START*
+
+START vs POST_ABX
+```{R}
+sample_start<-bd_preabx$distances %>% names
+sample_postabx<-bd_postabx$distances %>% names
+
+sort(sample_start)
+sort(sample_postabx)
+
+match_s<-sample_start[sample_start %in% sample_postabx]
+no_match<-sample_start[!(sample_start %in% sample_postabx)]
+
+all(match_s %in% sample_start)
+all(match_s %in% sample_postabx)
+
+match_phylo<-subset_samples(sp_phylo, mice %in% match_s)
+
+start<-subset_samples(match_phylo, Timepoint=="PRE_Abx")
+start_jsd<-phyloseq::distance(start, method= "jsd", na.rm=F)
+start_bd<-ordinate(start, method = "PCoA", distance = start_jsd)
+
+po<-subset_samples(match_phylo, Timepoint=="POST_ABX")
+po_jsd<-phyloseq::distance(po, method= "jsd", na.rm=F)
+po_bd<-ordinate(po, method = "PCoA", distance = po_jsd)
+
+set.seed(56987)
+protest( po_bd$vectors[,1:2], start_bd$vectors[,1:2], permutations = 10000)
+
+```
+
+START vs POST_FMT
+```{R}
+sample_postfmt<-bd_postfmt$distances %>% names
+
+sort(sample_start)
+sort(sample_postfmt)
+
+match_s<-sample_start[sample_start %in% sample_postabx]
+no_match<-sample_start[!(sample_start %in% sample_postabx)]
+
+all(match_s %in% sample_start)
+# These are the shared samples.
+
+match_phylo<-subset_samples(sp_phylo, mice %in% match_s)
+
+pof<-subset_samples(match_phylo, Timepoint=="POST_FMT")
+pof_jsd<-phyloseq::distance(pof, method= "jsd", na.rm=F)
+pof_bd<-ordinate(pof, method = "PCoA", distance = pof_jsd)
+
+
+protest(pof_bd$vectors[,1:2], start_bd$vectors[,1:2],  permutations = 10000)
+
+```
+
+START vs END
+```{R}
+sample_end<-bd_end$distances %>% names
+
+sort(sample_start)
+sort(sample_end)
+
+match_s<-sample_end[sample_end %in% sample_start]
+match_s2<-sample_start[sample_start %in% sample_end]
+match_s<-unique(match_s, match_s2)
+no_match_missing_start<-sample_end[!(sample_end %in% sample_start)]
+no_match_missing_end<-sample_start[!(sample_start %in% sample_end)]
+
+all(match_s %in% sample_start)
+all(match_s %in% sample_postabx)
+
+match_phylo<-subset_samples(sp_phylo, mice %in% match_s)
+
+start<-subset_samples(match_phylo, Timepoint=="PRE_Abx")
+start_jsd<-phyloseq::distance(start, method= "jsd", na.rm=F)
+start_bd<-ordinate(start, method = "PCoA", distance = start_jsd)
+
+end_e<-subset_samples(match_phylo, Timepoint=="END")
+end_jsd<-phyloseq::distance(end_e, method= "jsd", na.rm=F)
+end_bd<-ordinate(end_e, method = "PCoA", distance = end_jsd)
+
+
+set.seed(56987)
+protest(end_bd$vectors[,1:2], start_bd$vectors[,1:2], permutations = 10000)
+```
+
+
+*POST-Abx*
+
+POST_ABX vs POST_FMT
+```{R}
+
+sort(sample_postabx)
+sort(sample_postfmt)
+all(sort(sample_postabx) == sort(sample_postfmt))
+
+po_bd<-ordinate(post_abx_phylo, method = "PCoA", distance = post_abx_jsd)
+pof_bd<-ordinate(post_fmt_phylo, method = "PCoA", distance = post_fmt_jsd)
+
+
+set.seed(56987)
+protest(po_bd$vectors[,1:2], pof_bd$vectors[,1:2], permutations = 10000)
+
+```
+
+POST_ABX vs END
+```{R}
+
+sort(sample_postabx)
+sort(sample_end)
+all(sort(sample_postabx) == sort(sample_end))
+
+
+
+match_s<-sample_end[sample_end %in% sample_postabx]
+match_s2<-sample_postabx[sample_postabx %in% sample_end]
+match_s<-unique(match_s, match_s2)
+no_match_missing_start<-sample_end[!(sample_end %in% sample_postabx)]
+no_match_missing_end<-sample_postabx[!(sample_postabx %in% sample_end)]
+
+
+all(match_s %in% sample_end)
+all(match_s %in% sample_postabx)
+
+match_phylo<-subset_samples(sp_phylo, mice %in% match_s)
+
+end<-subset_samples(match_phylo, Timepoint=="END")
+end_jsd<-phyloseq::distance(end, method= "jsd", na.rm=F)
+end_bd<-ordinate(end, method = "PCoA", distance = end_jsd)
+
+po<-subset_samples(match_phylo, Timepoint=="POST_ABX")
+po_jsd<-phyloseq::distance(po, method= "jsd", na.rm=F)
+po_bd<-ordinate(po, method = "PCoA", distance = po_jsd)
+
+
+set.seed(56987)
+protest(end_bd$vectors[,1:2], po_bd$vectors[,1:2], ermutations = 10000)
+
+```
+
+*POST-FMT*
+
+POST_FMT vs END
+```{R}
+
+sort(sample_postfmt)
+sort(sample_end)
+all(sort(sample_postfmt) == sort(sample_end))
+
+
+
+match_s<-sample_end[sample_end %in% sample_postfmt]
+match_s2<-sample_postfmt[sample_postfmt %in% sample_end]
+match_s<-unique(match_s, match_s2)
+no_match_missing_start<-sample_end[!(sample_end %in% sample_postfmt)]
+no_match_missing_end<-sample_postfmt[!(sample_postfmt %in% sample_end)]
+
+
+all(match_s %in% sample_end)
+all(match_s %in% sample_postfmt)
+
+match_phylo<-subset_samples(sp_phylo, mice %in% match_s)
+
+end<-subset_samples(match_phylo, Timepoint=="END")
+end_jsd<-phyloseq::distance(end, method= "jsd", na.rm=F)
+end_bd<-ordinate(end, method = "PCoA", distance = end_jsd)
+
+pof<-subset_samples(match_phylo, Timepoint=="POST_FMT")
+pof_jsd<-phyloseq::distance(pof, method= "jsd", na.rm=F)
+pof_bd<-ordinate(pof, method = "PCoA", distance = pof_jsd)
+
+
+set.seed(56987)
+protest(end_bd$vectors[,1:2], pof_bd$vectors[,1:2], ermutations = 100000)
+
+```
+
+## Save dataset
+
+```{r}
+dir.create("Taxonomy/RData")
+save.image("Taxonomy/RData/00_Load_clean_beta.RData")
+```
+

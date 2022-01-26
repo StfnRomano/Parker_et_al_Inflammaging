@@ -1,0 +1,233 @@
+---
+title: "Load and filter functional data"
+author: "Stefano Romano"
+date: "October, 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages and the previous workspace.
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2",
+                      "propr", "devtools", "ggpubr", "vegan", "RColorBrewer", "car", 
+                      "DHARMa", "glmmTMB", "lme4", "papeR")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(car)
+library(lme4)
+library(ggConvexHull)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(CoDaSeq)
+library(ggrepel)
+library(pairwiseAdonis)
+library(ggnewscale)
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+```
+
+# Clean dataset
+
+Load the pathway information.
+Select only the relevant samples.
+
+```{R}
+# Make phyloseq object
+phyl_yy<-phyloseq(otu_table(path, taxa_are_rows = F), sample_data(m))
+ntaxa(phyl_yy)
+```
+
+
+# Clean the dataset
+
+```{R}
+x<-genefilter_sample(phyl_yy, filterfun_sample(function(x) x == 0), A=1*nsamples(phyl_yy))
+x<-!(x)
+phyl_yy<-prune_taxa(x, phyl_yy)
+ntaxa(phyl_yy)
+```
+
+
+### Do graphs with single pathway
+
+```{R echo=TRUE}
+# Create formatted df
+all(rownames(as.data.frame(otu_table(phyl_yy))) == rownames(meta(phyl_yy)))
+df_m<-cbind.data.frame(as.data.frame(otu_table(phyl_yy)), meta(phyl_yy))
+
+# Select proper paths names
+t<-taxa_names(phyl_yy)
+all(t == names(df_m)[1:396])
+
+shortaxa<-gsub(".*: ", "" ,t)
+shortaxa<-gsub("/", "-" ,shortaxa)
+df_m$Timepoint<-factor(df_m$Timepoint, levels = c("PRE_Abx", "POST_ABX", "POST_FMT", "END"))
+pa<-"/Functions/Figures/Time_resolved_path_abund/"
+dir.create(pa)
+for(i in 1:length(t)){
+  ggplot(df_m, aes(Timepoint, log2(df_m[,i]), color = Timepoint)) +
+    geom_boxplot(outlier.colour = NULL) +
+    scale_colour_brewer(type = "qual", palette = 3)  +
+    new_scale_color() +
+    geom_jitter(width = 0.2, aes(fill = cage), pch = 21, alpha = 0.8, size = 2.5) +
+    scale_fill_brewer(type = "qual", palette = 1)  +
+    theme_bw() +
+    xlab("Time points") +
+    ylab("log2(rel. abund)")+
+    labs(title = paste0("Change in relative abundance of the path ", shortaxa[i])) +
+    theme(axis.text.x = element_text(angle = 90)) +
+    facet_wrap(~groups)
+  ggsave(paste0(pa, shortaxa[i], ".png"), device = "png", width = 10)
+  
+}
+```
+
+Keep all paths present in all samples of OY or YO at Start or Post_FMT
+
+#### Check for Old
+```{r}
+### Pre Abx
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "PRE_Abx" & groups == "O Y ")
+# All mice
+wh0_pre <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=1*nsamples(phylo_oy))
+sum(wh0_pre)
+
+## POST FMT
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "POST_FMT" & groups == "O Y ")
+# All mice
+wh0_post <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=1*nsamples(phylo_oy))
+sum(wh0_post)
+oy_to_keep<-c(wh0_pre[wh0_pre == T], wh0_post[wh0_post == T])
+```
+
+#### Check for Young
+```{r}
+### Pre Abx
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "PRE_Abx" & groups == "Y O ")
+# All mice
+wh0_pre <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=1*nsamples(phylo_oy))
+sum(wh0_pre)
+
+## POST FMT
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "POST_FMT" & groups == "Y O ")
+# All mice
+wh0_post <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=1*nsamples(phylo_oy))
+sum(wh0_post)
+
+yo_to_keep<-c(wh0_pre[wh0_pre == T], wh0_post[wh0_post == T])
+```
+
+*Merge missing and filtered paths*
+```{r}
+# Combine the paths to keep in a single vector
+to_keep_oy_yo<-unique(names(c(yo_to_keep, oy_to_keep)))
+
+
+to_add<-as.logical(rep(TRUE, length(to_keep_oy_yo)))
+names(to_add)<-to_keep_oy_yo
+
+# select all paths in the filtered dataset
+to_remove_names<-setdiff(taxa_names(phyl_yy), to_keep_oy_yo)
+to_remove<-as.logical(rep(FALSE, length(to_remove_names)))
+names(to_remove)<-to_remove_names
+
+
+tota_genes_to_keep_pluremove<-c(to_remove,to_add)
+names(tota_genes_to_keep_pluremove) <-as.character(names(tota_genes_to_keep_pluremove))
+
+all(sort(names(tota_genes_to_keep_pluremove)) == sort(taxa_names(phyl_yy)))
+```
+
+There is a problem with 5' in names
+```{r}
+all(to_keep_oy_yo %in% colnames(path))
+names(path)<-gsub("5'", "5", names(path))
+all(to_keep_oy_yo %in% colnames(path))
+
+path_2<-path[,which(colnames(path) %in% to_keep_oy_yo)]
+ncol(path_2)
+
+# all filtered path are now selected in the df
+phyl_yy_filtered<-phyloseq(otu_table(path_2, taxa_are_rows = F), sample_data(m))
+```
+
+
+Save data
+
+```{R}
+saveRDS(phyl_yy_filtered, "Functions/RDS/Phyloseq_filtered_path_yooy.rds")
+```
+
+## Filter only path in all at Start/End YO OY
+
+#### Chek for Y
+```{r}
+### Pre Abx
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "PRE_Abx" & receiver == "Y")
+# All mice
+wh0_pre <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=0.9*nsamples(phylo_oy))
+sum(wh0_pre)
+
+## POST FMT
+phylo_oy<-subset_samples(phyl_yy, Timepoint == "PRE_Abx" & receiver == "O")
+# All mice
+wh0_post <- genefilter_sample(phylo_oy, filterfun_sample(function(x) x  > 0), A=0.9*nsamples(phylo_oy))
+sum(wh0_post)
+
+oy_to_keep<-c(wh0_pre[wh0_pre == T], wh0_post[wh0_post == T])
+```
+
+Merge missing and filtered paths.
+
+```{r}
+to_keep_oy_yo<-unique(names(c(yo_to_keep, oy_to_keep)))
+
+to_add<-as.logical(rep(TRUE, length(to_keep_oy_yo)))
+names(to_add)<-to_keep_oy_yo
+# select all paths in the filtered dataset
+to_remove_names<-taxa_names(phyl_yy)[which(!(taxa_names(phyl_yy) %in% to_keep_oy_yo))]
+to_remove<-rep(FALSE, length(to_remove_names))
+names(to_remove)<-to_remove_names
+tota_genes_to_keep_pluremove<-c(to_remove,to_add)
+```
+
+```{r}
+all(to_keep_oy_yo %in% names(path))
+names(path)<-gsub("5'", "5", names(path))
+all(to_keep_oy_yo %in% names(path))
+
+path_2<-path[,which(colnames(path) %in% to_keep_oy_yo)]
+phyl_yy_filtered_start<-phyloseq(otu_table(path_2, taxa_are_rows = F), sample_data(m))
+```
+
+
+### Save data and image
+```{R}
+saveRDS(phyl_yy_filtered_start, "Functions/RDS/Phyloseq_filtered_path_start.rds")
+save.image("Functions/RData/02_Filter_format_DA.RData")
+
+```
+

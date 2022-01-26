@@ -1,0 +1,129 @@
+---
+title: "Filter data fro DA, family"
+author: "Stefano Romano"
+date: "June 26, 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages and the previous workspace.
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2", "ggnewscale",
+                      "propr", "devtools", "ggpubr", "vegan", "RColorBrewer", "car", 
+                      "DHARMa", "glmmTMB", "lme4", "papeR")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(car)
+library(lme4)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(CoDaSeq)
+library(ggrepel)
+library(ggnewscale)
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+
+load("Taxonomy/RData/00_Load_clean_beta.RData")
+```
+
+# Create phyloseq object
+
+```{R}
+
+tax = read.delim("Raw_data/merged_metaphlan3_family.txt", sep = "\t", stringsAsFactors = F)
+
+# Create phyloseq object
+sp_phylo<-phyloseq(otu_table(sp, taxa_are_rows = T), sample_data(m))
+ntaxa(sp_phylo)
+```
+
+
+### Do graphs with single family
+
+```{R}
+# create a df for plotting
+all(rownames(as.data.frame(t(otu_table(sp_phylo)))) == rownames(meta(sp_phylo)))
+df_m<-cbind.data.frame(as.data.frame(t(otu_table(sp_phylo))), meta(sp_phylo))
+
+# Select proper taxa names
+t<-taxa_names(sp_phylo)
+all(t == names(df_m)[1:27])
+
+
+shortaxa<-t
+for(i in 1:length(shortaxa)){
+  x<-strsplit(shortaxa[i], split = "|", fixed = T)[[1]][5]
+  x<-gsub("f__", "", x)
+  shortaxa[i]<-gsub("_", " ", x)
+}
+
+
+df_m$Timepoint<-factor(df_m$Timepoint, levels = c("PRE_Abx", "POST_ABX", "POST_FMT", "END"))
+path<-"/Taxonomy/Figures/Time_resolved_taxa_abund_family/"
+dir.create(path)
+for(i in 1:length(t)){
+  ggplot(df_m, aes(Timepoint, log2(df_m[,i]), color = Timepoint)) +
+    geom_boxplot(outlier.colour = NULL) +
+    scale_colour_brewer(type = "div", palette = 1)  +
+    new_scale_color() +
+    geom_jitter(width = 0.2, aes(fill = cage), pch = 21, alpha = 0.8, size = 2.5) +
+    scale_fill_brewer(type = "qual", palette = 1)  +
+    theme_bw() +
+    xlab("Time points") +
+    ylab("log2(rel. abund)")+
+    labs(title = paste0("Change in relative abundance of the family ", shortaxa[i])) +
+    theme(axis.text.x = element_text(angle = 90)) +
+    facet_wrap(~groups)
+  ggsave(paste0(path, t[i], ".png"), device = "png")
+  
+}
+```
+
+Remove taxa that have rel. ab. of 0 in all samples. 
+```{r}
+x<-genefilter_sample(sp_phylo, filterfun_sample(function(x) x == 0), A=1*nsamples(sp_phylo))
+x<-!(x)
+phyl_yy<-prune_taxa(x, sp_phylo)
+ntaxa(phyl_yy)
+
+x[x==FALSE]
+```
+
+Keep only taxa that have a rel. ab. > 0 in at least 15% of the samples. 
+Data were manually checked and this threshold was considered appropriate.
+
+```{R}
+wh0 <- genefilter_sample(phyl_yy, filterfun_sample(function(x) x > 0), A=0.15*nsamples(phyl_yy))
+phyl_yy <- prune_taxa(wh0, phyl_yy)
+ntaxa(phyl_yy)
+```
+
+### Save dataset and image
+
+```{R}
+saveRDS(phyl_yy, "Taxonomy/RDS/Phyloseq_filtered_family.rds")
+save.image("Taxonomy/RData/09_Filter_format_DA_family.RData")
+```

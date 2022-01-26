@@ -1,0 +1,192 @@
+---
+title: "DA metabolome"
+author: "Stefano Romano"
+date: "October 2020"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+# Load the needed packages
+
+Load all required packages.
+
+```{r, message=F}
+list.of.packages <- c("ggplot2", "dplyr", "reshape2",
+                      "propr", "devtools", "ggpubr", "vegan", "RColorBrewer", "car", 
+                      "DHARMa", "glmmTMB", "lme4", "papeR")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+if (!requireNamespace("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")}
+
+
+list.of.bioc <- c("phyloseq", "grDevices", "microbiome", "mixOmics")
+new.packages <- list.of.bioc[!(list.of.bioc %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+library(RColorBrewer)
+library(mixOmics)
+library(car)
+library(lme4)
+library(ggConvexHull)
+library(phyloseq)
+library(microbiome)
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(grDevices)
+library(vegan)
+library(devtools)
+library(CoDaSeq)
+library(ggrepel)
+library(ggnewscale)
+library(glmmTMB)
+library(DHARMa)
+library(dplyr)
+```
+
+# Load and pre-pocess data
+
+Load the metabolome.
+```{R}
+
+met<-read.delim("Raw_data/metabolome.txt", 
+                header = F, fill = T)
+```
+
+Transform the data.
+
+```{r}
+# Identify lowest constant to add to 0
+as.matrix(met) %>% as.vector() %>% sort() %>% unique() %>% head()
+
+# Convert values in numeric
+str(met)
+met[]<-lapply(met, function(x) as.numeric(as.character(x)))
+str(met)
+
+met[met == 0] <- 0.001
+met_log<-log2(met)
+head(met_log)
+
+```
+
+Center and divide by standard deviation.
+
+```{r}
+met_log<-as.data.frame(t(met_log))
+met_log_scaled<-scale(as.matrix(met_log), center = T, scale = T)
+met_log_scaled_df<-as.data.frame(met_log_scaled)
+
+```
+
+
+Format df
+```{r}
+met_log_scaled_df$samples<-gsub("\ [1-9]*", "", rownames(met_log_scaled_df))
+# add cage info
+all(rownames(met_log_scaled_df) == cage$codes)
+met_log_scaled_df$cage<-cage$cage
+
+# Make values as factors
+met_log_scaled_df$samples<-as.factor(met_log_scaled_df$samples)
+met_log_scaled_df$cage<-as.factor(met_log_scaled_df$cage)
+
+metabolites<-names(met_log_scaled_df)[1:67] # Subset, do not select the metadata names
+
+# The previous analysis showed that sample "Pre Abx_OY 611" is an outlier
+# Remove it
+df<-met_log_scaled_df[rownames(met_log_scaled_df) != "Pre Abx_OY 611",]
+# Re-order the groups factors
+df$samples<-factor(df$samples, levels = c("PreAbx_YO", "PreAbx_OY", "PostFMT_OY", "PostFMT_YO"))
+```
+
+Make the graphs for each metabolite.
+
+```{r}
+met_log_scaled_df$samples<-gsub("\ [1-9]*", "", rownames(met_log_scaled_df))
+
+# add cage info
+all(rownames(met_log_scaled_df) == cage$codes)
+met_log_scaled_df$cage<-cage$cage
+
+# Make values as factors
+met_log_scaled_df$samples<-as.factor(met_log_scaled_df$samples)
+met_log_scaled_df$cage<-as.factor(met_log_scaled_df$cage)
+
+p<-"Metabolome/Figures/"
+dir.create(p, recursive = T)
+for(i in 1:length(metabolites)){
+  ggplot(met_log_scaled_df,aes(samples, met_log_scaled_df[, metabolites[i]], fill = samples)) +
+  geom_boxplot(outlier.colour = "none") +
+  scale_fill_brewer(palette = "Set3") +
+  new_scale_fill() +
+  geom_jitter(width = 0.2, size = 5, aes(fill = cage), pch = 21) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_bw() 
+  ggsave(paste0(p, metabolites[i], ".png", sep = ""), device = "png")
+}
+
+```
+
+# Linear models
+
+Build linear models including cage as random effect.
+
+```{r}
+l_lm<-vector(mode = "list", length = length(metabolites))
+names(l_lm)<-metabolites
+for(i in 1: length(metabolites)){
+  print(i)
+  l_lm[[i]]<-lmer(met_log_scaled_df[,i] ~ samples  + (1|cage), data = met_log_scaled_df)
+}
+```
+
+
+Save residuals.
+
+```{r}
+for(i in 1:length(l_lm)){ 
+  path<-"Metabolome/Figures/Residuals/"
+  dir.create(path, recursive = T)
+  x<-paste0(path,metabolites[i], ".png", sep = "")
+  trellis.device(device="png", file = x)
+  print(plot(l_lm[[i]]))
+  dev.off()
+  png(paste0(path,metabolites[i], "_qq.png", sep = ""))
+  qqnorm(residuals(l_lm[[i]]))
+  qqline(residuals(l_lm[[i]]))
+  dev.off()
+}
+```
+
+Most of the residuals do not meet the random and normal distribution condition.
+Proceed using non parametric tests.
+
+## Non parametric tests
+
+```{r}
+library(coin)
+df_met<-data.frame(metab = metabolites, pvalue = vector(length = length(metabolites)))
+met_log_scaled_df$samples<-as.factor(met_log_scaled_df$samples)
+for(i in 1:length(metabolites)) {
+  w<-kruskal_test(met_log_scaled_df[,metabolites[i]] ~ samples | cage, data = met_log_scaled_df)
+  df_met[df_met$metab == metabolites[i], 2]<-pvalue(w)
+}
+
+df_met$padjust<-p.adjust(df_met$pvalue, method = "fdr")
+df_met
+```
+
+Nothing significant.
+
+
+### Save Image
+```{r}
+save.image("Metabolome/RData/DA_metabolome.RData")
+
+```
