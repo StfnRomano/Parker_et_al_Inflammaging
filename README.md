@@ -4,17 +4,17 @@
 
 Aimee Parker, Stefano Romano, Rebecca Ansorge, Asmaa Aboelnour, Gwenaelle Le Gall, George M. Savva, Andrea Telatin, Emily Jones, David Baker, Steven Rudder, L. Ashley Blackshaw, Glen Jeffery, Simon R. Carding, *Heterochronic fecal microbiota transfer reverses hallmarks of the aging murine gut, eye and brain*
 
-If you wish to use any material in this repository please be aware that this code was tailored to the analyses conducted in the above manuscript and it is presented here to foster reproducibility. **The code is not intended to be used in other contexts**. Hence, use it at your own risk.
+If you wish to use any material in this repository please be aware that this code was tailored to the analyses conducted in the above manuscript and it is presented here to foster reproducibility. **The code is not intended to be used in other contexts**
 
  The scripts are divided in 3 folders, containing the code for the analyses performed for the taxonomy, functional profiles, and metabolomics data. Scripts are numbered and have been executed sequentially.
 
 **If you find this code useful or use any of the approaches below in your work, please cite**:
 
-Parker et al, 2021, *Heterochronic fecal microbiota transfer reverses hallmarks of the aging murine gut, eye and brain*
+Parker et al, 2022, *Heterochronic fecal microbiota transfer reverses hallmarks of the aging murine gut, eye and brain*
 
 ## Work-flow
 ### Taxonomy
-01 – Load data, format the metadata and perform alpha and beta diversity analyses
+01 – Load data and perform alpha and beta diversity analyses
 
 02 – Filter the data to perform differential abundance analysis at the species level
 
