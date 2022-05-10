@@ -2,7 +2,7 @@
 
 **Please note**, these scripts are purely intended as a descriptive extension of the methods used in the publication: 
 
-Aimee Parker, Stefano Romano, Rebecca Ansorge, Asmaa Aboelnour, Gwenaelle Le Gall, George M. Savva, Andrea Telatin, Emily Jones, David Baker, Steven Rudder, L. Ashley Blackshaw, Glen Jeffery, Simon R. Carding, _"Fecal microbiota transfer between young and aged mice reverses hallmarks of the aging gut, eye, and brain."_ Microbiome 10, 68 (2022). https://doi.org/10.1186/s40168-022-01243-w
+Aimée Parker, Stefano Romano, Rebecca Ansorge, Asmaa Aboelnour, Gwenaelle Le Gall, George M. Savva, Matthew G. Pontifex, Andrea Telatin, David Baker, Emily Jones, David Vauzour, Steven Rudder, L. Ashley Blackshaw, Glen Jeffery & Simon R. Carding, _"Fecal microbiota transfer between young and aged mice reverses hallmarks of the aging gut, eye, and brain."_ Microbiome 10, 68 (2022). https://doi.org/10.1186/s40168-022-01243-w
 
 If you wish to use any material in this repository please be aware that this code was tailored to the analyses conducted in the above manuscript and it is presented here to foster reproducibility. **The code is not intended to be used in other contexts**
 
